@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build and tool output
+dist/
+*.tsbuildinfo
+coverage/
+*.tgz
+
+# Pi runtime artifacts (local package installs, sessions)
+.pi/npm/
+.pi/sessions/
+
+# Logs
+*.log
+logs/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.idea/
+.vscode/
+*.swp
+*~

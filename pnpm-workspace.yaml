@@ -1,0 +1,9 @@
+packages:
+  - packages/*
+
+# Transitive dependencies of the Pi host packages ship postinstall scripts that
+# this repo does not need. Deny them explicitly so installs stay script-free.
+allowBuilds:
+  "@google/genai": false
+  esbuild: false
+  protobufjs: false

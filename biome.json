@@ -1,0 +1,50 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.5.15/schema.json",
+	"vcs": {
+		"enabled": true,
+		"clientKind": "git",
+		"useIgnoreFile": true
+	},
+	"files": {
+		"includes": ["packages/*/src/**", "packages/*/test/**", "packages/*/package.json", "*.json", "*.ts"]
+	},
+	"formatter": {
+		"enabled": true,
+		"indentStyle": "tab",
+		"lineWidth": 120
+	},
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"correctness": {
+				"noUnusedImports": "error",
+				"noUnusedVariables": "error",
+				"noUndeclaredVariables": "error"
+			},
+			"suspicious": {
+				"noExplicitAny": "error",
+				"noConsole": "error",
+				"noTsIgnore": "error"
+			},
+			"style": {
+				"useImportType": "error",
+				"useExportType": "error",
+				"noNonNullAssertion": "error",
+				"noParameterAssign": "error",
+				"useConst": "error",
+				"useNodejsImportProtocol": "error"
+			},
+			"complexity": {
+				"noForEach": "off"
+			}
+		}
+	},
+	"assist": {
+		"actions": {
+			"source": {
+				"organizeImports": "on"
+			}
+		}
+	}
+}
