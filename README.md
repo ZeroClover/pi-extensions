@@ -2,7 +2,7 @@
 
 A collection of extensions for [Pi](https://pi.dev), the terminal coding agent. The repository is a pnpm monorepo: each extension is an independent [Pi package](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/packages.md) in its own directory under `packages/`, with its own README, tests, and manifest.
 
-Everything here is written by AI coding agents. The rules they follow live in [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/); humans review and steer.
+Everything here is written by AI coding agents. The rules they follow live in [`AGENTS.md`](AGENTS.md) and [`docs/`](docs/); humans review and steer. Changes are planned with [OpenSpec](https://github.com/Fission-AI/OpenSpec): repo-wide work in the root `openspec/`, package work in each package's own `openspec/`.
 
 ## Extensions
 
@@ -16,7 +16,9 @@ Everything here is written by AI coding agents. The rules they follow live in [`
 .
 ├── packages/<name>/        one Pi package per directory: src/, test/, README.md, package.json
 ├── docs/                   architecture, conventions, workflow, and Pi reference
-├── .agents/skills/         project skill that agents load when working on an extension
+├── openspec/               OpenSpec root for repository-wide changes (packages have their own)
+├── .agents/skills/         project skills: pi-extension-dev plus the OpenSpec workflows
+├── .pi/ .claude/           OpenSpec slash commands and skills for Pi and Claude Code
 ├── AGENTS.md               rules and index for AI agents (CLAUDE.md redirects here)
 ├── package.json            workspace root: shared tooling only, no runtime code
 ├── tsconfig.base.json      strict TypeScript settings shared by every package

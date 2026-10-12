@@ -18,6 +18,7 @@ This repository is a pnpm monorepo of extensions for [Pi](https://pi.dev), the c
 6. Use pnpm exclusively. Never npm, npx, yarn, or bun.
 7. Commits follow Conventional Commits with the package name as scope (`feat(pi-foo): add /foo command`); repo-wide changes use scope `repo`.
 8. Keep each package's `README.md` and the extension table in the root `README.md` in sync with the code.
+9. Non-trivial work goes through OpenSpec (propose, apply, archive). Package-scoped changes and specs live in `packages/<name>/openspec/`, repo-wide ones in the root `openspec/`. Run every `openspec` command with the matching directory as the working directory; the CLI uses the nearest root. See `docs/workflow.md`, "Plan with OpenSpec".
 
 ## Commands
 
@@ -30,6 +31,7 @@ Run from the repository root.
 | `pnpm lint:fix` | Apply Biome fixes and formatting |
 | `pnpm typecheck` / `pnpm lint` / `pnpm test` | Individual steps of `check` |
 | `pnpm --filter <name> <script>` | Run a package's own script |
+| `cd packages/<name> && openspec <cmd>` | OpenSpec for one package (root `openspec` is for repo-wide changes) |
 
 ## Index
 
@@ -37,5 +39,5 @@ Run from the repository root.
 |---|---|
 | need the repository layout or the anatomy of a package | `docs/architecture.md` |
 | write or review TypeScript, choose dependencies, design tools, events, or UI | `docs/conventions.md` |
-| create, change, verify, or ship an extension | `docs/workflow.md` |
+| create, change, verify, or ship an extension; plan with OpenSpec | `docs/workflow.md` |
 | look up Pi's API, examples, docs, or type declarations | `docs/pi-reference.md` |

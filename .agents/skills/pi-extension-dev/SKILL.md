@@ -11,10 +11,11 @@ This repository's rules are in `AGENTS.md` and `docs/` at the repository root. T
 
 1. Read `docs/conventions.md` and `docs/workflow.md` if not already read in this session.
 2. Make sure `node_modules/@earendil-works/pi-coding-agent/` exists; run `pnpm install` if not. It contains Pi's docs, examples, and types for the targeted version.
-3. For every Pi API you will touch, read the relevant section of `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` (or the doc named in `docs/pi-reference.md`) and open the closest example under `examples/extensions/`. Confirm signatures in `dist/index.d.ts` when the doc is not explicit.
-4. Implement with `src/index.ts` as thin wiring and logic in separate modules with tests.
-5. Verify as described in `docs/workflow.md` "Verify": `pnpm check`, the RPC load smoke test, and a live check for anything that needs a session. Restart Pi after editing `src/`; a running session keeps the old code.
-6. Update the package README and the root README table, then commit with the package name as scope.
+3. For non-trivial work, plan with OpenSpec first using the package directory as the working directory (`docs/workflow.md`, "Plan with OpenSpec"); a new package gets its own root via `openspec init packages/<name> --tools none`.
+4. For every Pi API you will touch, read the relevant section of `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` (or the doc named in `docs/pi-reference.md`) and open the closest example under `examples/extensions/`. Confirm signatures in `dist/index.d.ts` when the doc is not explicit.
+5. Implement with `src/index.ts` as thin wiring and logic in separate modules with tests.
+6. Verify as described in `docs/workflow.md` "Verify": `pnpm check`, the RPC load smoke test, and a live check for anything that needs a session. Restart Pi after editing `src/`; a running session keeps the old code.
+7. Update the package README and the root README table, archive the OpenSpec change, then commit with the package name as scope.
 
 ## When something does not typecheck
 

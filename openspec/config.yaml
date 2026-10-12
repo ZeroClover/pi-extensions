@@ -1,0 +1,24 @@
+schema: spec-driven
+
+# This root covers repository-wide work only: shared tooling, root docs,
+# AGENTS.md, CI, and the conventions every package follows.
+# Each extension package keeps its own OpenSpec root at
+# packages/<name>/openspec/ and every change for that package lives there.
+context: |
+  Scope: this OpenSpec root is for repository-wide changes only (root tooling,
+  shared configuration, docs/, AGENTS.md, conventions). Changes to one
+  extension package belong in packages/<name>/openspec/; run OpenSpec commands
+  with that package directory as the working directory so the nearest root
+  resolves to the package. Do not create package-scoped changes or specs here.
+
+  Constraints: follow AGENTS.md and docs/conventions.md. The root contains no
+  runtime code; shared config changes must keep the strict TypeScript and
+  Biome settings at least as strict as they are.
+
+rules:
+  proposal:
+    - State which packages, if any, are affected and why the change is repo-wide
+      rather than package-scoped.
+  tasks:
+    - End with a verification task that runs `pnpm check` and, when packages are
+      affected, the load smoke test from docs/workflow.md.
