@@ -18,8 +18,8 @@ Everything here is written by AI coding agents. The rules they follow live in [`
 ├── docs/                   architecture, conventions, workflow, and Pi reference
 ├── openspec/               OpenSpec root for repository-wide changes (packages have their own)
 ├── .agents/skills/         project skills: pi-extension-dev plus the OpenSpec workflows
-├── .pi/ .claude/           OpenSpec slash commands and skills for Pi and Claude Code
-├── AGENTS.md               rules and index for AI agents (CLAUDE.md redirects here)
+├── .claude/                Claude Code commands and skills for OpenSpec (generated)
+├── AGENTS.md               rules and index for AI agents; CLAUDE.md is only `@AGENTS.md`
 ├── package.json            workspace root: shared tooling only, no runtime code
 ├── tsconfig.base.json      strict TypeScript settings shared by every package
 └── biome.json              lint and format rules
