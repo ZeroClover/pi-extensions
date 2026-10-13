@@ -1,0 +1,180 @@
+# Design
+
+## Context
+
+See proposal.md for motivation. Constraints that shape the approach:
+
+- Pi 1.1.0 delivers streaming through `message_update` whose `assistantMessageEvent` is a typed `AssistantMessageEvent` (`text_delta`, `thinking_delta`, `toolcall_delta`, `*_start`, `*_end`, `done`, `error`). This is the only per-token signal; providers report `usage` once, at the end.
+- `before_provider_request` fires when the payload is final and about to be sent; `after_provider_response` fires with the HTTP status once headers arrive. `turn_start` fires earlier (before context handlers), so it is a poor TTFT origin.
+- `AssistantMessage.timestamp` (request start, wall clock) and `durationMs` (monotonic, set at stream end) exist on every finished message; `usage.reasoning` is a subset of `usage.output` and is present only for some providers; `usage.cost` is all zeros when the model has no price.
+- `ctx.ui.setStatus` calls `requestRender()` on every invocation (coalesced per tick); each render diffs the whole screen. The footer joins all extension statuses on one line, sorted by key.
+- `ctx.ui.theme.fg(token, text)` colours with theme tokens; `theme.style(text, { fg: Color })` accepts a concrete `Color`, and `parseColor()` from `@earendil-works/pi-tui` turns `#rrggbb` into one.
+- The repository forbids `any`, casts, `console.*`, timers in the factory, and requires logic in Pi-free modules with Vitest tests (docs/conventions.md).
+- Existing implementations studied: monotykamary/pi-tps (turn-end banner, stall/burst gating, cost), shreyashp77/pi-tps (live footer, EMA, colours, thinking count), EnderLiquid/oh-my-tps (phase state machine, `before_provider_request` origin, 5 s window, tokenx, event-bus renderer split).
+
+## Goals / Non-Goals
+
+**Goals:**
+- One Pi-free measurement core driven by normalised inputs and an injectable clock, fully unit-testable with synthetic delta timelines.
+- A render path whose cost is bounded by the ticker interval, not by the delta rate.
+- Figures that are explainable: every number has a stated numerator, denominator and exclusion rule; unreliable numbers are marked, never silently inflated.
+
+**Non-Goals:**
+- Exact tokenisation for any model family; a calibrated heuristic is the target.
+- Measuring sub-agent, compaction, cache-warming or classifier requests.
+- A dedicated widget, custom footer, or multi-line display.
+- Per-project configuration.
+- Export commands (the session file already holds the records; a later change can add one).
+
+## Decisions
+
+### D1. Module layout
+
+```
+packages/pi-tps/
+├── package.json            pi manifest; dependencies: tokenx; peers: pi-coding-agent, pi-ai, pi-tui
+├── README.md
+├── src/
+│   ├── index.ts            wiring only: events → core, core → renderer/persistence/bus
+│   ├── constants.ts        every threshold (stall 500 ms, window 5 s, warm-up 1.5 s, burst limits, EMA α, clamp)
+│   ├── clock.ts            Clock interface { now(): number } + performance.now default
+│   ├── measurement.ts      request state machine; pure functions over normalised deltas
+│   ├── burst.ts            burst classifier over the delta timeline
+│   ├── estimator.ts        tokenx wrapper + incremental per-delta estimate
+│   ├── calibration.ts      ratio store: load/update/save, EMA, clamp
+│   ├── aggregate.ts        session aggregates from telemetry records
+│   ├── telemetry.ts        TelemetryRecord type (versioned), snapshot type, event channel names
+│   ├── config.ts           schema, defaults, loader with warnings, threshold resolution and glob matching
+│   ├── format.ts           number/duration/token formatting, field layout per phase
+│   ├── render.ts           colour application via Theme; produces the setStatus string
+│   └── ticker.ts           throttled interval driver (start/stop, frame index)
+└── test/                   one file per module above
+```
+
+Rationale: mirrors oh-my-tps's "core is Pi-free, renderer is a subscriber" split, which the repository conventions also demand (thin `index.ts`, testable modules). Alternative (single file like monotykamary) rejected: untestable under this repo's rules.
+
+### D2. Request lifecycle and state machine
+
+States: `idle → waiting → streaming → settled | aborted | errored`.
+
+| Transition | Trigger | Notes |
+|---|---|---|
+| idle → waiting | `before_provider_request` while `turnActive` | `turnActive` set by `turn_start`, cleared by `turn_end`. Filters cache warming, compaction and branch summaries, which run outside a turn. A second `before_provider_request` in the same turn (retry) resets to waiting from the new timestamp. |
+| waiting → streaming | first `message_update` with non-empty `text_delta` / `thinking_delta` / `toolcall_delta` | TTFT locked. `after_provider_response` timestamp recorded as time-to-headers (telemetry only). |
+| streaming → settled | `message_end` with assistant role and `stopReason` in `stop` / `length` / `toolUse` | Settlement computed from `usage`. |
+| waiting/streaming → aborted | `message_end` with `stopReason: "aborted"` | Partial record, abort flag. |
+| waiting/streaming → errored | `message_end` with `stopReason` `error` or `deferred` | Live cleared, previous settled kept, no record. |
+| any → idle | `agent_end`, `session_shutdown` | Timer stopped. |
+
+`message_start` is not used for timing (it fires at stream creation, before tokens); it only confirms that an assistant stream belongs to the active turn.
+
+Alternative considered: `turn_start` as the TTFT origin (monotykamary). Rejected: it precedes `context` handlers and payload transforms, inflating TTFT by extension work.
+
+### D3. Delta timeline and phases
+
+Each accepted delta is appended as `{ at, kind: "thinking" | "output", rawTokens }` with a running prefix sum per kind. From this single array the core derives:
+
+- TTFT (first entry), time to first visible text (first `output` entry).
+- Active spans per kind: sum of gaps between consecutive entries of that kind, excluding gaps ≥ 500 ms (stalls). The gap between the last thinking entry and the first output entry is attributed to neither.
+- Live output TPS: prefix-sum difference over the entries with `at ≥ now − 5000`, divided by `min(5000, now − firstOutputAt)`; unavailable before 1.5 s. Computed on the ticker, not per delta.
+- Burst features: arrival-batch count (deltas less than 1 ms apart form one batch), largest 100 ms cluster share.
+
+`toolcall_delta` counts as output: tool arguments are generated tokens. The estimate uses the raw JSON delta.
+
+Alternative (oh-my-tps): keep a queue of raw strings and re-tokenise the joined window on every delta. Rejected for O(n·window) cost at high delta rates.
+
+### D4. Token estimation and calibration
+
+- `tokenx` `estimateTokenCount(delta)` per delta. Estimating per delta rather than per window over-counts slightly at delta boundaries; calibration absorbs the bias.
+- Calibration key: `${provider}/${responseModel ?? model}`. Ratio = EMA with α = 0.3 over `reported / rawEstimate`, clamped to [0.25, 4], where the sample is `(usage.output − usage.reasoning) / rawOutput` when the provider reports a reasoning breakdown (streamed thinking is often a summary or hidden, so its estimate does not match the reasoning tokens) and `usage.output / (rawThinking + rawOutput)` otherwise; first sample sets the ratio directly. Updated only for settled, non-burst, non-aborted requests with `usage.output > 0` and raw estimate > 50 tokens (tiny responses are noisy).
+- Thinking share at settlement: `usage.reasoning` when defined, else `rawThinking × ratio`, capped at `usage.output`.
+- Store: `<agent-dir>/pi-tps-calibration.json` as `{ version: 1, models: { key: { ratio, samples, updatedAt } } }`. Written after each update (tiny file, once per request): the file is re-read and merged first so concurrent Pi sessions do not drop each other's entries, then written to a temporary file and renamed. Load errors warn once.
+
+Alternative: exact BPE (`gpt-tokenizer`). Rejected: MB-scale load, correct only for OpenAI encodings, and still needs calibration for Anthropic/Gemini.
+
+### D5. Settlement formulas
+
+Let `O = usage.output`, `R = thinking tokens` (D4), `So` = active output span, `St` = active thinking span, `T` = request start → message_end.
+
+| Figure | Formula | Condition |
+|---|---|---|
+| Output TPS | `(O − R) / So` | not burst, `So ≥ 1 s` |
+| Thinking TPS | `R / St` | thinking present, `St ≥ 1 s` |
+| Throughput (burst) | `O / T` | burst |
+| Fallback | calibrated estimate in place of `O` | `usage.output` missing or 0 |
+
+Cross-check: `AssistantMessage.durationMs` is compared with the core's own `T`; a difference above 250 ms is recorded in the telemetry as `clockSkewMs` for debugging but does not change figures.
+
+### D6. Burst classification
+
+Evaluated once at settlement over the timeline (see spec `request-measurement`, "Burst detection"). Thresholds live in `constants.ts`:
+
+```
+BURST_BATCH_GAP_MS = 1
+BURST_MIN_BATCHES = 5
+BURST_CLUSTER_WINDOW_MS = 100
+BURST_CLUSTER_SHARE = 0.5
+BURST_CLUSTER_MIN_SPAN_MS = 1000
+MAX_PLAUSIBLE_TPS = 10000
+```
+
+Deltas are grouped into arrival batches before counting. Pi parses every SSE event of one network read in the same tick, so a fast provider shows many sub-millisecond gaps while streaming genuinely; the originally planned "median inter-delta gap below 1 ms" rule marked such streams (DeepSeek, GLM) as bursts in live tests and was replaced by "fewer than 5 batches", which still catches a buffered response flushed in a few reads.
+
+The 100 ms cluster rule is the key addition over monotykamary: it catches a proxy that streams normally, buffers for a while, then flushes a large tail (the stall-then-burst pattern), which neither the delta count nor the median gap sees.
+
+### D7. Rendering and animation
+
+- `ticker.ts` owns one `setInterval`; started on waiting, stopped on settle/abort/error/`agent_end`/`session_shutdown`. Each tick: advance frame, ask the core for a snapshot, format, `setStatus`. Delta handlers only mutate core state.
+- With `animation.enabled: false`: static indicator; the tick still runs but calls `setStatus` only when the formatted string changed.
+- Settled and idle states render once, synchronously, from the event that caused them.
+- Colour: thresholds resolved once per request (on waiting) for the active model; the TPS token is coloured with `theme.fg(token, text)` for tokens or `theme.style(text, { fg: parseColor(hex) })` for hex. Every other field uses `baseColor` (default `dim`). `theme` is read from `ctx.ui.theme` at render time, never cached, so theme switches apply at the next tick.
+- Width: the footer truncates; the format keeps the most important fields first (indicator, TPS, TTFT, tokens, elapsed, cost, thinking) so truncation drops the tail.
+
+Layout (illustrative; final glyphs documented in README):
+
+```
+waiting   ⠋ τ1.2s  Δ…
+streaming ⠙ τ1.2s  Δ48.6~  ↓1.2k  (💭 1.9k · 4.0s)
+settled   ✓ τ1.2s  Δ52.0   ↑12.3k ↓1.5k  18.4s  $0.012  (💭 ▸ 60.1 · 4.0s)
+burst     ✓ τ4.0s  ⚡225    ↑3.1k ↓0.9k  4.0s
+aborted   ✗ τ1.2s  Δ47.0   ↓0.6k  5.0s
+session   Σ τ1.0s  Δ55.3   ↑40k ↓6.2k  $0.05  ·3
+```
+
+The ASCII-only fallback and exact marker set are settled in the README during implementation; markers are single display cells to keep width stable.
+
+### D8. Configuration
+
+- Loaded in `session_start` (the factory has no `ctx` and must not do I/O that could warn). Parsed with hand-written guards (no TypeBox validation of user JSON: the file is small and warnings must name fields precisely).
+- Resolution order per spec `tps-configuration`. Glob support is `*` only, compiled to a `RegExp` with escaped literals; specificity = number of literal characters. No glob library.
+- Colour validation: theme tokens checked against the `ThemeColor` union materialised as a `Set<string>` in `config.ts`; hex checked by regex. Hex is parsed with `parseColor` at render time.
+
+### D9. Persistence and reconstruction
+
+- `pi.appendEntry("pi-tps", record)` after settle/abort when `persist` is true (default). Record `version: 1`, about 400–600 bytes; one per request. Entries never enter model context.
+- Format is deliberately independent of monotykamary/pi-tps (`customType: "tps"`): its per-turn schema lacks the thinking split, burst and abort flags, and following a third-party format would tie this package to its changes. Foreign entries are ignored on reconstruction.
+- On `session_start` and `session_tree`: walk `ctx.sessionManager.getBranch()`, keep `custom` entries with `customType === "pi-tps"` and `version === 1`, rebuild `lastRecord` and aggregates through `aggregate.ts`. Entries are validated structurally before use (unknown shapes skipped).
+- Session averages are computed from records, never incrementally mutated, so branch switches are a recompute.
+
+### D10. Event bus
+
+Channels and payload types live in `telemetry.ts`; `pi-tps:status` (snapshot or `null`), `pi-tps:telemetry` (record), `pi-tps:request` (re-emit). The built-in renderer is wired directly in `index.ts` rather than as a bus subscriber, to avoid self-dispatch; the bus is for other extensions.
+
+### D11. Commands
+
+`/tps` with argument parsing in `index.ts`: no argument → toggle visibility; `mode` → toggle summary mode; `mode last|session` → set. Argument completions offered for `mode`, `last`, `session`. Visibility and mode are in-memory for the session; `summaryMode` in the config sets the initial value.
+
+## Risks / Trade-offs
+
+- [Providers that emit encrypted or summarised thinking without deltas] → thinking span is invisible; TTFT is measured to the first observable delta and the telemetry marks `thinkingObserved: false`. Documented limitation.
+- [Thinking estimate used in the output-TPS numerator when `usage.reasoning` is absent] → the numerator carries estimation error; the readout marks the TPS as estimated-thinking (same uncalibrated marker). Calibration reduces it over time.
+- [`before_provider_request` may fire for requests that are not the turn's main stream while a turn is active (e.g. an extension's own model call inside a tool)] → the core accepts only streams whose `message_start` is an assistant message and ignores a second concurrent request; the first `message_end` closes the measurement. Residual mismatch is logged as `clockSkewMs` via the `durationMs` cross-check.
+- [Footer width overflow with many fields] → field order by importance; truncation by Pi is accepted; thinking group is last.
+- [Calibration drifts when the same model is served through different providers with different tokenisers] → key includes provider.
+- [Per-request file write of the calibration store] → one small synchronous write per request; acceptable. Failure warns once.
+- [tokenx estimation cost at very high delta rates] → per-delta estimation of short strings is sub-millisecond; render is throttled; if profiling shows cost, batch estimation into the ticker.
+- [Session files grow by one small entry per request] → records are compact (~400–600 bytes, under 2 % of a typical session file); `persist: false` disables persistence at the cost of empty history after reload.
+
+## Open Questions
+
+- Exact glyph set (Unicode vs ASCII fallback) for indicator and markers; to be fixed in the README during implementation and verified in a terminal without Nerd Fonts. Does not affect specs or tasks.

@@ -1,0 +1,56 @@
+/** A gap of at least this length between two content deltas is a stall (excluded from active spans). */
+export const STALL_GAP_MS = 500;
+
+/** Live output TPS is computed over this trailing window. */
+export const LIVE_WINDOW_MS = 5000;
+
+/** Live output TPS stays unavailable until this much time has passed since the first output delta. */
+export const LIVE_WARMUP_MS = 1500;
+
+/** A settled TPS needs at least this much active span; shorter spans are too noisy to report. */
+export const MIN_SETTLED_SPAN_MS = 1000;
+
+/** Deltas closer than this to their predecessor arrived in the same network read and form one batch. */
+export const BURST_BATCH_GAP_MS = 1;
+
+/** Burst criterion: fewer arrival batches than this. */
+export const BURST_MIN_BATCHES = 5;
+
+/** Burst criterion: width of the window searched for a token cluster. */
+export const BURST_CLUSTER_WINDOW_MS = 100;
+
+/** Burst criterion: share of all estimated tokens that one cluster window must carry. */
+export const BURST_CLUSTER_SHARE = 0.5;
+
+/** The cluster criterion only applies when the stream lasted longer than this. */
+export const BURST_CLUSTER_MIN_SPAN_MS = 1000;
+
+/** Burst criterion: any computed generation rate above this is not real streaming. */
+export const MAX_PLAUSIBLE_TPS = 10_000;
+
+/** Weight of the newest sample in the calibration moving average. */
+export const CALIBRATION_ALPHA = 0.3;
+
+/** Lower clamp of the calibration ratio. */
+export const CALIBRATION_MIN_RATIO = 0.25;
+
+/** Upper clamp of the calibration ratio. */
+export const CALIBRATION_MAX_RATIO = 4;
+
+/** Requests whose raw estimate is not above this are too small to calibrate from. */
+export const CALIBRATION_MIN_ESTIMATE = 50;
+
+/** Trailing context, in characters, used to estimate a delta where it joins the previous text. */
+export const ESTIMATOR_CONTEXT_CHARS = 64;
+
+/** A difference above this between Pi's `durationMs` and the measured elapsed time is recorded. */
+export const CLOCK_SKEW_THRESHOLD_MS = 250;
+
+/** Default refresh interval of the ticker while a request is in flight. */
+export const DEFAULT_TICK_INTERVAL_MS = 100;
+
+/** Smallest accepted ticker interval. */
+export const MIN_TICK_INTERVAL_MS = 50;
+
+/** Key under which the readout is written with `ctx.ui.setStatus`. */
+export const STATUS_KEY = "pi-tps";
