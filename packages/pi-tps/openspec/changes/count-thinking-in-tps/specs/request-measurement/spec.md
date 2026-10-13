@@ -73,7 +73,15 @@ While streaming, live TPS SHALL be the generation rate over the most recent 5 s:
 
 #### Scenario: Stall inside the window
 - **WHEN** the last 5 s hold 3 s of output deltas at 60 tokens per second and a 2 s pause
-- **THEN** live TPS is 60 tokens per second, and it holds that value while a pause lasts
+- **THEN** live TPS is 60 tokens per second
+
+#### Scenario: Long pause
+- **WHEN** output at 60 tokens per second stops, and the pause has lasted 3.6 s
+- **THEN** the window holds 1.4 s of counted time and live TPS is unavailable; it was 60 until the pause reached 3.5 s and stays unavailable until deltas resume
+
+#### Scenario: Resuming after a pause
+- **WHEN** continuous output resumes after a 3 s pause
+- **THEN** the window still holds 2 s of pre-pause output, so live TPS stays available throughout; after a 4 s pause only 1 s of pre-pause output remains and the figure returns once 0.5 s of resumed output lie in the window, the resumed output's first delta counting neither tokens nor time
 
 #### Scenario: Thinking phase
 - **WHEN** a model with thinking ratio 8 streams summary chunks of 20 estimated tokens every second
@@ -134,7 +142,7 @@ At `message_end`, when `usage.output` is a finite positive number, the settled T
 - **THEN** the request has a settled TPS over 3.4 s and contributes to the run TPS
 
 ### Requirement: Burst detection
-Output deltas (text and tool-call) less than 1 ms after the previous output delta SHALL form one arrival batch (one network read); thinking deltas are a summary or a chain of thought at the provider's cadence and SHALL NOT be burst evidence. A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 output batches for a response of at least 50 visible output tokens; a 100 ms window carrying at least 50 % of the arriving output tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the output stream (first to last output delta) lasts more than 1 s; or a settled generation TPS above 10 000.
+Output deltas (text and tool-call) less than 1 ms after the previous output delta SHALL form one arrival batch (one network read); thinking deltas are a summary or a chain of thought at the provider's cadence and SHALL NOT be burst evidence. A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 output batches for a response of at least 50 output-stream tokens, where that count is the reported visible output when it is exact (no thinking phase, or a positive `usage.reasoning`) and the calibrated estimate of the output stream otherwise; a 100 ms window carrying at least 50 % of the arriving output tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the output stream (first to last output delta) lasts more than 1 s; or a settled generation TPS above 10 000.
 
 #### Scenario: Too few batches
 - **WHEN** a 900-token response arrives as 3 deltas
@@ -159,6 +167,10 @@ Output deltas (text and tool-call) less than 1 ms after the previous output delt
 #### Scenario: Hidden reasoning then a short tool call
 - **WHEN** usage reports output 940 and reasoning 900 after a thinking phase without deltas, and the 40 visible tokens arrived in 3 deltas
 - **THEN** the request is not marked burst, because only 40 output tokens arrived
+
+#### Scenario: Short tool call after unreported thinking
+- **WHEN** usage reports output 624 and reasoning 0 after streamed thinking estimated at 500 tokens, and a tool call estimated at 20 tokens arrived in one batch
+- **THEN** the request is not marked burst, because the threshold uses the output stream's 20 tokens rather than the residual 124
 
 #### Scenario: Chunked summary then a tool call
 - **WHEN** summary chunks of 20 estimated tokens arrive at 2 s, 6 s and 11 s and a 20-token tool call at 12 s, with usage output 1500 and reasoning 1480
