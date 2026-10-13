@@ -254,3 +254,7 @@ Other extensions can subscribe with `pi.events.on(channel, handler)`. Types are 
 `RunRecord` (`version: 2`) holds `startedAt`, `elapsedMs`, `aborted` and `requests`. Each `RequestRecord` holds `timestamp`, `provider`, `model`, `responseModel?`, `outcome` (`settled` | `aborted`), `burst`, `burstReason?` (`few-batches` | `cluster` | `rate`), `ttftMs?`, `ttftTextMs?`, `headersMs?`, `elapsedMs`, `outputMs`, `generationMs` (thinking time plus output span), `generatedTokens` (the tokens the rate counts), `tps?` (the generation rate), `outputTps?`, `thinkingTps?`, `throughputTps?`, `thinkingMs?` (thinking time), `thinkingTokens?`, `thinking` (`none` | `hidden` | `streamed`), `estimated` (no reported `usage.output`; streamed thinking without a positive `reasoningTokens` has estimated `thinkingTokens` as well), `inputTokens`, `outputTokens` (including thinking), `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens?`, `deltaCount`, `stallCount`, `stallMs`, `cost?` and `clockSkewMs?`. Entries with another `version` or another `customType` (for example `"tps"` from other TPS extensions) are ignored.
 
 In `rpc`, `json` and `print` modes pi-tps measures, persists and broadcasts, but never calls `setStatus`.
+
+## License
+
+[AGPL-3.0-only](../../LICENSE)

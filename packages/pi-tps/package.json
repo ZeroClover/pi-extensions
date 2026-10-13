@@ -2,6 +2,16 @@
 	"name": "pi-tps",
 	"version": "0.1.0",
 	"description": "Tokens-per-second readout in the footer: live speed while streaming and one summary per agent run, with burst detection and calibrated estimates",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZeroClover/pi-extensions.git",
+		"directory": "packages/pi-tps"
+	},
+	"homepage": "https://github.com/ZeroClover/pi-extensions/tree/master/packages/pi-tps#readme",
+	"bugs": {
+		"url": "https://github.com/ZeroClover/pi-extensions/issues"
+	},
 	"type": "module",
 	"keywords": [
 		"pi-package",

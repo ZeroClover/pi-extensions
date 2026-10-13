@@ -65,3 +65,7 @@ Pi loads TypeScript directly, so there is no build step. To add an extension, fo
 - [`docs/conventions.md`](docs/conventions.md): TypeScript, lint, dependency, and extension design rules
 - [`docs/workflow.md`](docs/workflow.md): creating, verifying, and shipping an extension
 - [`docs/pi-reference.md`](docs/pi-reference.md): where to find Pi's docs, examples, and types
+
+## License
+
+[AGPL-3.0-only](LICENSE)
