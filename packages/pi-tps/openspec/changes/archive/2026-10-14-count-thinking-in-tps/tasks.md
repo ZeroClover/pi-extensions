@@ -38,7 +38,7 @@
 
 - [x] 7.1 Rewrite the README sections "Reading the readout" (TPS, think, markers), "Measurement" (phases, thinking time, live window, settlement, burst input, calibration with the thinking ratio, version 2 files and records, the backend table from design.md Context) and "Limitations" (count without phase, backends that synthesise `thinking_start` from the first chunk so their rate is an upper bound, buffered chain of thought with a short answer, first-chunk discrepancy, thresholds), and the root README table line; verify every statement against the code and that the example config block still loads without warnings in `test/config.test.ts`
 - [x] 7.2 Run `pnpm check` and the load smoke test from `docs/workflow.md`; verify both pass
-- [ ] 7.3 Live check in the TUI with one backend of each kind available (an OpenAI-compatible full chain-of-thought model, a Responses-API reasoning model with and without summaries, an Anthropic thinking model): compare the summary's `out`, `think` and TPS with the `usage` in the session file and confirm the live TPS neither starts high nor shows `—` while a summary streams; record the observed lines in the final report
+- [x] 7.3 Live check in the TUI with one backend of each kind available (an OpenAI-compatible full chain-of-thought model, a Responses-API reasoning model with and without summaries, an Anthropic thinking model): compare the summary's `out`, `think` and TPS with the `usage` in the session file and confirm the live TPS neither starts high nor shows `—` while a summary streams; record the observed lines in the final report
 
 ## Workflow follow-up
 
