@@ -1,0 +1,4 @@
+"@zeroclover/pi-tps@0.1.0":
+  dir: packages/pi-tps
+  intents:
+    - good-knives-boil
