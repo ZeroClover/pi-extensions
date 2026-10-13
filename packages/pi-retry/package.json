@@ -1,0 +1,38 @@
+{
+	"name": "@zeroclover/pi-retry",
+	"version": "0.1.0",
+	"description": "Automatic retry for retryable provider errors: classifies failures, honours provider retry-after hints up to a configurable limit, and backs off exponentially otherwise",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZeroClover/pi-extensions.git",
+		"directory": "packages/pi-retry"
+	},
+	"homepage": "https://github.com/ZeroClover/pi-extensions/tree/master/packages/pi-retry#readme",
+	"bugs": {
+		"url": "https://github.com/ZeroClover/pi-extensions/issues"
+	},
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension"
+	],
+	"files": [
+		"src",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
+	}
+}
