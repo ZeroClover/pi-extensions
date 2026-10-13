@@ -1,47 +1,20 @@
 import { describe, expect, it } from "vitest";
-import {
-	formatCost,
-	formatDuration,
-	formatSeconds,
-	formatSnapshot,
-	formatTokens,
-	formatTps,
-	plainText,
-} from "../src/format.ts";
-import type { LiveSnapshot, SessionAggregate, StatusSnapshot, TelemetryRecord } from "../src/telemetry.ts";
+import type { LabelStyle } from "../src/config.ts";
+import { formatCost, formatDuration, formatSnapshot, formatTokens, formatTps, plainText } from "../src/format.ts";
+import type { LiveSnapshot, RunSummary, SessionSummary, StatusSnapshot } from "../src/telemetry.ts";
 
-function record(overrides: Partial<TelemetryRecord> = {}): TelemetryRecord {
+function both(snapshot: StatusSnapshot, indicator = "⠋"): Record<LabelStyle, string> {
 	return {
-		version: 1,
-		timestamp: 1,
-		provider: "p",
-		model: "m",
-		outcome: "settled",
-		burst: false,
-		elapsedMs: 18_400,
-		thinkingObserved: false,
-		estimated: false,
-		inputTokens: 12_345,
-		outputTokens: 1500,
-		cacheReadTokens: 0,
-		cacheWriteTokens: 0,
-		deltaCount: 300,
-		stallCount: 0,
-		stallMs: 0,
-		ttftMs: 1200,
-		outputTps: 52,
-		...overrides,
+		text: plainText(formatSnapshot(snapshot, "text", indicator), "text"),
+		symbols: plainText(formatSnapshot(snapshot, "symbols", indicator), "symbols"),
 	};
-}
-
-function text(snapshot: StatusSnapshot, indicator = "⠋"): string {
-	return plainText(formatSnapshot(snapshot, indicator));
 }
 
 const live: LiveSnapshot = {
 	phase: "streaming",
 	provider: "p",
 	model: "m",
+	request: 1,
 	elapsedMs: 6000,
 	ttftMs: 1200,
 	liveTps: 48.62,
@@ -49,127 +22,201 @@ const live: LiveSnapshot = {
 	calibrated: true,
 };
 
+function runSummary(overrides: Partial<RunSummary> = {}): RunSummary {
+	return {
+		requests: 3,
+		tps: 110.5,
+		estimated: false,
+		ttftMs: 700,
+		inputTokens: 500,
+		cacheReadTokens: 5700,
+		cacheWriteTokens: 0,
+		visibleOutputTokens: 1400,
+		thinkingTokens: 94,
+		thinkingMs: 4100,
+		stallMs: 1200,
+		stallCount: 1,
+		cost: 0.0018,
+		elapsedMs: 18_400,
+		aborted: false,
+		...overrides,
+	};
+}
+
+function sessionSummary(overrides: Partial<SessionSummary> = {}): SessionSummary {
+	return {
+		requests: 9,
+		tps: 110,
+		estimated: false,
+		ttftMs: 600,
+		inputTokens: 40_000,
+		cacheReadTokens: 0,
+		cacheWriteTokens: 0,
+		visibleOutputTokens: 6200,
+		thinkingTokens: 0,
+		thinkingMs: 0,
+		stallMs: 0,
+		stallCount: 0,
+		cost: 0.05,
+		runs: 3,
+		...overrides,
+	};
+}
+
 describe("number formatting", () => {
-	it("formats token counts with k and M suffixes", () => {
+	it("formats token counts with K, M and B, dropping .0", () => {
 		expect(formatTokens(987)).toBe("987");
-		expect(formatTokens(12_345)).toBe("12.3k");
-		expect(formatTokens(999.6)).toBe("1.0k");
-		expect(formatTokens(999_960)).toBe("1.0M");
+		expect(formatTokens(12_345)).toBe("12.3K");
+		expect(formatTokens(40_000)).toBe("40K");
+		expect(formatTokens(999.6)).toBe("1K");
+		expect(formatTokens(999_960)).toBe("1M");
 		expect(formatTokens(2_345_678)).toBe("2.3M");
+		expect(formatTokens(1_500_000_000)).toBe("1.5B");
 	});
 
-	it("formats TPS and TTFT with one decimal", () => {
+	it("formats durations with one decimal below a minute, then two units", () => {
+		expect(formatDuration(1234)).toBe("1.2s");
+		expect(formatDuration(45_000)).toBe("45.0s");
+		expect(formatDuration(90_000)).toBe("1m 30s");
+		expect(formatDuration(8_100_000)).toBe("2h 15m");
+		expect(formatDuration(302_400_000)).toBe("3d 12h");
+	});
+
+	it("formats TPS and cost", () => {
 		expect(formatTps(52)).toBe("52.0");
-		expect(formatSeconds(1234)).toBe("1.2s");
-	});
-
-	it("formats durations", () => {
-		expect(formatDuration(18_400)).toBe("18.4s");
-		expect(formatDuration(65_000)).toBe("1m05s");
-		expect(formatDuration(3_725_000)).toBe("1h02m");
-	});
-
-	it("formats cost by magnitude", () => {
 		expect(formatCost(0.0123)).toBe("$0.012");
 		expect(formatCost(0.0042)).toBe("$0.0042");
 		expect(formatCost(1.5)).toBe("$1.50");
 	});
 });
 
-describe("phases", () => {
-	it("waiting shows the spinner, a counting TTFT and a TPS placeholder", () => {
-		expect(text({ ...live, phase: "waiting", elapsedMs: 700 })).toBe("⠋ τ0.7s Δ–");
+describe("readout phases", () => {
+	it("waiting shows the spinner and a counting TTFT", () => {
+		expect(both({ ...live, phase: "waiting", elapsedMs: 1200 })).toEqual({ text: "⠋ TTFT 1.2s", symbols: "⠋ ⇥1.2s" });
 	});
 
-	it("streaming shows locked TTFT, live TPS, estimated output and thinking", () => {
-		expect(text({ ...live, thinkingTokens: 1900, thinkingMs: 4000 }, "⠙")).toBe("⠙ τ1.2s Δ48.6 ↓1.2k ∴↓1.9k 4.0s");
+	it("streaming shows live TPS, TTFT, output, thinking and the request number", () => {
+		const snapshot: LiveSnapshot = { ...live, outputTokens: 1200, thinkingTokens: 1900, thinkingMs: 4000, request: 2 };
+		expect(both(snapshot, "⠙")).toEqual({
+			text: "⠙ TPS 48.6 tok/s · TTFT 1.2s · out 1.2K · think 1.9K 4.0s · req 2",
+			symbols: "⠙ »48.6/s ⇥1.2s ↓1.2K ✻1.9K 4.0s ×2",
+		});
 	});
 
-	it("streaming shows a placeholder before live TPS is available", () => {
+	it("streaming shows — before live TPS is available", () => {
 		const { liveTps: _omit, ...early } = live;
-		expect(text(early)).toBe("⠋ τ1.2s Δ– ↓1.2k");
+		expect(both(early)).toEqual({ text: "⠋ TPS — · TTFT 1.2s · out 1.2K", symbols: "⠋ »— ⇥1.2s ↓1.2K" });
 	});
 
-	it("settled shows TTFT, TPS, tokens, elapsed, cost and thinking", () => {
-		const settled = record({ cost: 0.012, thinkingTps: 60.1, thinkingMs: 4000 });
-		expect(text({ phase: "last", record: settled })).toBe("✓ τ1.2s Δ52.0 ↑12.3k ↓1.5k 18.4s $0.012 ∴Δ60.1 4.0s");
+	it("working shows run time, requests and output, and no rate", () => {
+		expect(both({ phase: "working", elapsedMs: 12_300, requests: 1, outputTokens: 1600 }, "⠹")).toEqual({
+			text: "⠹ run 12.3s · req 1 · out 1.6K",
+			symbols: "⠹ 12.3s ×1 ↓1.6K",
+		});
 	});
 
-	it("idle without data shows placeholders for the selected mode", () => {
-		expect(text({ phase: "empty", mode: "last" })).toBe("· τ– Δ–");
-		expect(text({ phase: "empty", mode: "session" })).toBe("Σ τ– Δ–");
+	it("shows no data as — in either mode", () => {
+		expect(both({ phase: "empty", mode: "last" })).toEqual({ text: "TPS — · TTFT —", symbols: "· »— ⇥—" });
+		expect(both({ phase: "empty", mode: "session" })).toEqual({
+			text: "session · TPS — · TTFT —",
+			symbols: "Σ »— ⇥—",
+		});
+	});
+});
+
+describe("run summary", () => {
+	it("shows every available field in both styles (default style, symbol style)", () => {
+		expect(both({ phase: "run", run: runSummary() })).toEqual({
+			text: "TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3 · $0.0018",
+			symbols: "✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K ✻94 4.1s ‖1.2s×1 ×3 $0.0018",
+		});
 	});
 
-	it("session mode shows averages, sums, cost and the request count", () => {
-		const aggregate: SessionAggregate = {
-			count: 3,
-			meanTtftMs: 1000,
-			meanOutputTps: 55.3,
-			inputTokens: 40_000,
-			outputTokens: 6200,
+	it("replaces TPS with the burst throughput in a burst-only run", () => {
+		const { tps: _omit, ...rest } = runSummary({
+			burstTps: 225,
+			requests: 1,
+			ttftMs: 4000,
+			elapsedMs: 4000,
+			inputTokens: 3100,
 			cacheReadTokens: 0,
-			cacheWriteTokens: 0,
-			cost: 0.05,
-		};
-		expect(text({ phase: "session", aggregate })).toBe("Σ τ1.0s Δ55.3 ↑40.0k ↓6.2k $0.050 ×3");
+			visibleOutputTokens: 900,
+			thinkingTokens: 0,
+			stallMs: 0,
+		});
+		const { cost: _cost, ...summary } = rest;
+		expect(both({ phase: "run", run: summary })).toEqual({
+			text: "burst 225.0 tok/s · TTFT 4.0s · 4.0s · in 3.1K · out 900 · req 1",
+			symbols: "✓ ↯225.0/s ⇥4.0s 4.0s ↑3.1K ↓900 ×1",
+		});
+	});
+
+	it("marks an aborted run and omits empty input", () => {
+		const { cost: _cost, ...summary } = runSummary({
+			aborted: true,
+			tps: 47,
+			requests: 1,
+			ttftMs: 600,
+			elapsedMs: 5000,
+			inputTokens: 0,
+			cacheReadTokens: 0,
+			visibleOutputTokens: 64,
+			thinkingTokens: 0,
+			stallMs: 0,
+		});
+		expect(both({ phase: "run", run: summary })).toEqual({
+			text: "aborted · TPS 47.0 tok/s · TTFT 0.6s · 5.0s · out 64 · req 1",
+			symbols: "✗ »47.0/s ⇥0.6s 5.0s ↓64 ×1",
+		});
+	});
+
+	it("marks a run TPS that relies on the estimate", () => {
+		expect(both({ phase: "run", run: runSummary({ estimated: true }) }).text).toMatch(/^TPS ~110\.5 tok\/s/);
+	});
+
+	it("shows — when neither TPS nor throughput is known", () => {
+		const { tps: _omit, ...summary } = runSummary();
+		expect(both({ phase: "run", run: summary }).text).toMatch(/^TPS — · /);
+	});
+});
+
+describe("session summary", () => {
+	it("shows the session marker, TPS, TTFT, tokens, runs and cost", () => {
+		expect(both({ phase: "session", session: sessionSummary() })).toEqual({
+			text: "session · TPS 110.0 tok/s · TTFT 0.6s · in 40K · out 6.2K · runs 3 · $0.050",
+			symbols: "Σ »110.0/s ⇥0.6s ↑40K ↓6.2K ×3 $0.050",
+		});
 	});
 });
 
 describe("displayed fields", () => {
-	it("uses k suffixes for large counts and plain numbers below 1000", () => {
-		expect(text({ phase: "last", record: record({ inputTokens: 12_345, outputTokens: 987 }) })).toContain(
-			"↑12.3k ↓987",
-		);
+	it("uses K for large counts and plain numbers below 1000", () => {
+		const summary = runSummary({ inputTokens: 12_345, cacheReadTokens: 0, visibleOutputTokens: 987 });
+		expect(both({ phase: "run", run: summary }).text).toContain("in 12.3K · out 987");
 	});
 
-	it("folds cache reads into the input figure with a cache marker", () => {
-		const cached = record({ inputTokens: 200, cacheReadTokens: 8000, cacheWriteTokens: 0 });
-		expect(text({ phase: "last", record: cached })).toContain("↑8.2k↻");
+	it("folds cache reads into the input with their share (cached input)", () => {
+		const summary = runSummary({ inputTokens: 200, cacheReadTokens: 8000, cacheWriteTokens: 0 });
+		expect(both({ phase: "run", run: summary })).toMatchObject({
+			text: expect.stringContaining("in 8.2K (cache 98%)"),
+			symbols: expect.stringContaining("↑8.2K ↻98%"),
+		});
 	});
 
-	it("omits cost when the record has none", () => {
-		expect(text({ phase: "last", record: record() })).not.toContain("$");
+	it("marks uncalibrated live TPS (uncalibrated live figure)", () => {
+		expect(both({ ...live, calibrated: false })).toEqual({
+			text: "⠋ TPS ~48.6 tok/s · TTFT 1.2s · out 1.2K",
+			symbols: "⠋ »~48.6/s ⇥1.2s ↓1.2K",
+		});
 	});
 
-	it("marks the TPS segment for threshold colouring", () => {
-		const segments = formatSnapshot({ phase: "last", record: record() }, "");
-		expect(segments.filter((segment) => segment.tps !== undefined)).toEqual([{ text: "Δ52.0", tps: 52 }]);
-	});
-
-	it("shows the previous settled TPS for a request without one", () => {
-		const { outputTps: _omit, ...short } = record();
-		expect(text({ phase: "last", record: short, fallbackTps: 41 })).toContain("Δ41.0");
-	});
-});
-
-describe("markers", () => {
-	it("marks a burst request and shows its throughput uncoloured", () => {
-		const { outputTps: _omit, ...base } = record({ burst: true, throughputTps: 225, ttftMs: 4000, elapsedMs: 4000 });
-		const segments = formatSnapshot({ phase: "last", record: base }, "");
-		expect(plainText(segments)).toBe("✓ τ4.0s ↯225.0 ↑12.3k ↓1.5k 4.0s");
-		expect(segments.some((segment) => segment.tps !== undefined)).toBe(false);
-	});
-
-	it("marks an aborted request", () => {
-		expect(text({ phase: "last", record: record({ outcome: "aborted", outputTps: 47 }) })).toMatch(/^✗ τ1\.2s Δ47\.0 /);
-	});
-
-	it("marks uncalibrated live figures", () => {
-		expect(text({ ...live, calibrated: false })).toBe("⠋ τ1.2s Δ48.6~ ↓1.2k~");
-	});
-
-	it("marks settled figures that rely on the estimate", () => {
-		expect(text({ phase: "last", record: record({ estimated: true }) })).toContain("Δ52.0~");
-	});
-
-	it("marks the session mode", () => {
-		const aggregate: SessionAggregate = {
-			count: 1,
-			inputTokens: 0,
-			outputTokens: 0,
-			cacheReadTokens: 0,
-			cacheWriteTokens: 0,
-		};
-		expect(text({ phase: "session", aggregate })).toMatch(/^Σ /);
+	it("tags only the TPS segment for threshold colouring, and not the burst throughput", () => {
+		const line = formatSnapshot({ phase: "run", run: runSummary() }, "text", "");
+		expect(line.segments.filter((segment) => segment.tps !== undefined)).toEqual([
+			{ text: "TPS 110.5 tok/s", tps: 110.5 },
+		]);
+		const { tps: _omit, ...burstOnly } = runSummary({ burstTps: 225 });
+		const burstLine = formatSnapshot({ phase: "run", run: burstOnly }, "text", "");
+		expect(burstLine.segments.some((segment) => segment.tps !== undefined)).toBe(false);
 	});
 });

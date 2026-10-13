@@ -50,7 +50,7 @@ function setup(animated: boolean) {
 		const snapshot = meter.snapshot();
 		if (!snapshot) return;
 		const indicator = animated ? (FRAMES[frame % FRAMES.length] ?? "") : (FRAMES[0] ?? "");
-		writer.set(plainText(formatSnapshot(snapshot, indicator)), write);
+		writer.set(plainText(formatSnapshot(snapshot, "text", indicator), "text"), write);
 	});
 	return { time, meter, written, ticker };
 }

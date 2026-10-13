@@ -9,14 +9,17 @@ import {
 	STALL_GAP_MS,
 } from "./constants.ts";
 import { createDeltaEstimator, type DeltaEstimator, type StreamKind } from "./estimator.ts";
-import { type LiveSnapshot, TELEMETRY_VERSION, type TelemetryRecord } from "./telemetry.ts";
+import type { LiveSnapshot, RequestRecord } from "./telemetry.ts";
 
-/** What is known when a request is sent. */
-export interface RequestContext {
+/** The model serving a request and its calibration ratio (absent when the model is not calibrated yet). */
+export interface RequestIdentity {
 	provider: string;
 	model: string;
-	/** Calibration ratio of the model; absent when the model is not calibrated yet. */
 	ratio?: number | undefined;
+}
+
+/** What is known when a request is sent. */
+export interface RequestContext extends RequestIdentity {
 	/** Wall-clock milliseconds, stored in the record for display and persistence. */
 	wallTime: number;
 }
@@ -41,7 +44,7 @@ export interface EndInput {
 export type EndOutcome =
 	| { kind: "ignored" }
 	| { kind: "errored" }
-	| { kind: "recorded"; record: TelemetryRecord; calibration?: CalibrationSample };
+	| { kind: "recorded"; record: RequestRecord; calibration?: CalibrationSample };
 
 /** The content-carrying events of Pi's `AssistantMessageEvent`. */
 export interface ContentEvent {
@@ -98,6 +101,11 @@ function round(value: number, decimals: number): number {
 
 function positive(value: number | undefined): value is number {
 	return value !== undefined && Number.isFinite(value) && value > 0;
+}
+
+/** Usage counts from providers are trusted only as non-negative finite numbers. */
+function count(value: number): number {
+	return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 /** First index whose value is at least `target` in an ascending array. */
@@ -189,8 +197,15 @@ export class Measurement {
 		if (this.request && this.request.headersAt === undefined) this.request.headersAt = this.clock.now();
 	}
 
-	messageStart(): void {
-		if (this.request) this.request.messageStarted = true;
+	/**
+	 * The assistant stream started. `identity` names the model that actually serves the request, which differs from
+	 * the selected model when that is a virtual model; it replaces the identity without moving the timing origin.
+	 */
+	messageStart(identity?: RequestIdentity): void {
+		const request = this.request;
+		if (!request) return;
+		request.messageStarted = true;
+		if (identity) request.context = { ...identity, wallTime: request.context.wallTime };
 	}
 
 	delta(stream: StreamKind, text: string): void {
@@ -230,8 +245,8 @@ export class Measurement {
 		}
 	}
 
-	/** Live figures of the request in flight, computed at the current time. */
-	snapshot(): LiveSnapshot | undefined {
+	/** Live figures of the request in flight, computed at the current time; `requestNumber` is its place in the run. */
+	snapshot(requestNumber = 1): LiveSnapshot | undefined {
 		const request = this.request;
 		if (!request) return undefined;
 		const now = this.clock.now();
@@ -240,6 +255,7 @@ export class Measurement {
 			phase: request.firstAt === undefined ? "waiting" : "streaming",
 			provider: request.context.provider,
 			model: request.context.model,
+			request: requestNumber,
 			elapsedMs: now - request.startAt,
 			outputTokens: request.rawOutput * factor,
 			calibrated: request.context.ratio !== undefined,
@@ -291,7 +307,8 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	const reportedOutput = positive(usage.output) ? usage.output : undefined;
 	const rawTotal = request.rawThinking + request.rawOutput;
 	const outputTokens = reportedOutput ?? Math.round(rawTotal * factor);
-	const reasoning = usage.reasoning !== undefined && Number.isFinite(usage.reasoning) ? usage.reasoning : undefined;
+	// Reasoning is a subset of the output; a larger figure is a provider error.
+	const reasoning = usage.reasoning === undefined ? undefined : Math.min(count(usage.reasoning), outputTokens);
 	const thinkingObserved = request.thinkingDeltas > 0;
 
 	let thinkingTokens: number | undefined;
@@ -314,7 +331,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	const peakTps = Math.max(outputTps ?? 0, thinkingTps ?? 0);
 	const burstReason =
 		outcome === "settled"
-			? classifyBurst({ at: request.at, tokens: request.tokens }, peakTps > 0 ? peakTps : undefined)
+			? classifyBurst({ at: request.at, tokens: request.tokens }, outputTokens, peakTps > 0 ? peakTps : undefined)
 			: undefined;
 	let throughputTps: number | undefined;
 	if (burstReason !== undefined) {
@@ -323,20 +340,20 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		throughputTps = elapsedMs > 0 ? outputTokens / (elapsedMs / 1000) : undefined;
 	}
 
-	const record: TelemetryRecord = {
-		version: TELEMETRY_VERSION,
+	const record: RequestRecord = {
 		timestamp: request.context.wallTime,
 		provider: message.provider,
 		model: message.model,
 		outcome,
 		burst: burstReason !== undefined,
 		elapsedMs: round(elapsedMs, 0),
+		outputMs: round(request.outputSpanMs, 0),
 		thinkingObserved,
 		estimated: reportedOutput === undefined || thinkingEstimated,
-		inputTokens: usage.input,
+		inputTokens: count(usage.input),
 		outputTokens,
-		cacheReadTokens: usage.cacheRead,
-		cacheWriteTokens: usage.cacheWrite,
+		cacheReadTokens: count(usage.cacheRead),
+		cacheWriteTokens: count(usage.cacheWrite),
 		deltaCount: request.at.length,
 		stallCount: request.stallCount,
 		stallMs: round(request.stallMs, 0),

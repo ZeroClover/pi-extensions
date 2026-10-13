@@ -109,6 +109,8 @@ export function parseCalibration(text: string): { models: Map<string, Calibratio
  */
 export class CalibrationStore {
 	private models = new Map<string, CalibrationEntry>();
+	/** Keys updated in memory but not yet written; they win over the disk copy until a write succeeds. */
+	private readonly unsaved = new Set<string>();
 	private writeWarned = false;
 
 	constructor(
@@ -151,21 +153,52 @@ export class CalibrationStore {
 		return this.models.get(key);
 	}
 
-	/** Applies one sample and writes the file. Returns a warning the first time writing fails. */
+	/**
+	 * Applies one sample and writes the file inside a cross-process lock: the file is re-read and merged first, so
+	 * concurrent sessions neither lose updates nor build on stale ratios. Returns a warning the first time writing
+	 * fails; the in-memory ratios then stay authoritative for the session.
+	 */
 	update(key: string, sample: CalibrationSample, now: number): string | undefined {
 		if (!isCalibratable(sample)) return undefined;
-		// Concurrent Pi sessions share the file; take their entries first so the last writer does not drop them.
-		const onDisk = this.readQuietly();
-		if (onDisk) this.models = new Map([...this.models, ...onDisk]);
-		this.models.set(key, nextEntry(this.models.get(key), sample, now));
-		const file: CalibrationFile = { version: 1, models: Object.fromEntries(this.models) };
+		let release: (() => void) | undefined;
 		try {
-			this.files.write(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+			release = this.files.lock(this.path);
 		} catch (error) {
-			if (this.writeWarned) return undefined;
-			this.writeWarned = true;
-			return `pi-tps: cannot write ${this.path}: ${errorMessage(error)}; calibration is kept for this session only`;
+			this.applyInMemory(key, sample, now);
+			return this.writeFailure(error);
 		}
-		return undefined;
+		if (!release) {
+			// Another session holds the file; keep the sample and write it with the next update.
+			this.applyInMemory(key, sample, now);
+			return undefined;
+		}
+		try {
+			const onDisk = this.readQuietly();
+			if (onDisk) {
+				for (const [diskKey, entry] of onDisk) if (!this.unsaved.has(diskKey)) this.models.set(diskKey, entry);
+			}
+			this.applyInMemory(key, sample, now);
+			const file: CalibrationFile = { version: 1, models: Object.fromEntries(this.models) };
+			try {
+				this.files.write(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+			} catch (error) {
+				return this.writeFailure(error);
+			}
+			this.unsaved.clear();
+			return undefined;
+		} finally {
+			release();
+		}
+	}
+
+	private applyInMemory(key: string, sample: CalibrationSample, now: number): void {
+		this.models.set(key, nextEntry(this.models.get(key), sample, now));
+		this.unsaved.add(key);
+	}
+
+	private writeFailure(error: unknown): string | undefined {
+		if (this.writeWarned) return undefined;
+		this.writeWarned = true;
+		return `pi-tps: cannot write ${this.path}: ${errorMessage(error)}; calibration is kept for this session only`;
 	}
 }

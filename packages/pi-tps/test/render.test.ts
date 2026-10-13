@@ -1,7 +1,7 @@
 import { type Color, colorToHex } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { type ColorSpec, parseConfig, type Threshold } from "../src/config.ts";
-import { paint, renderSegments, StatusWriter, selectColor, type ThemeLike } from "../src/render.ts";
+import { paint, renderLine, StatusWriter, selectColor, type ThemeLike } from "../src/render.ts";
 
 const theme: ThemeLike = {
 	fg: (color, text) => `<${color}>${text}`,
@@ -26,26 +26,40 @@ describe("selectColor", () => {
 		expect(selectColor(DEFAULT, 80)).toEqual({ kind: "token", token: "success" });
 	});
 
+	it("lets the later of equal minimums win", () => {
+		const tie = thresholds([
+			{ min: 10, color: "error" },
+			{ min: 10, color: "success" },
+		]);
+		expect(selectColor(tie, 20)).toEqual({ kind: "token", token: "success" });
+	});
+
+	it("selects nothing for an empty list", () => {
+		expect(selectColor([], 50)).toBeUndefined();
+	});
+
 	it("selects nothing below the lowest threshold", () => {
 		expect(selectColor(thresholds([{ min: 10, color: "error" }]), 4)).toBeUndefined();
 	});
 });
 
-describe("renderSegments", () => {
+describe("renderLine", () => {
 	it("colours the TPS figure between thresholds and the rest in the base colour", () => {
-		expect(renderSegments([{ text: "✓" }, { text: "Δ45.0", tps: 45 }], theme, DIM, DEFAULT)).toBe(
-			"<dim>✓ <warning>Δ45.0",
+		const line = { indicator: "⠋", segments: [{ text: "TPS 45.0 tok/s", tps: 45 }, { text: "TTFT 1.2s" }] };
+		expect(renderLine(line, "text", theme, DIM, DEFAULT)).toBe("<dim>⠋ <warning>TPS 45.0 tok/s<dim> · <dim>TTFT 1.2s");
+		expect(renderLine({ segments: line.segments }, "symbols", theme, DIM, DEFAULT)).toBe(
+			"<warning>TPS 45.0 tok/s<dim> <dim>TTFT 1.2s",
 		);
 	});
 
 	it("uses the base colour below the lowest threshold", () => {
 		const list = thresholds([{ min: 10, color: "error" }]);
-		expect(renderSegments([{ text: "Δ4.0", tps: 4 }], theme, DIM, list)).toBe("<dim>Δ4.0");
+		expect(renderLine({ segments: [{ text: "»4.0/s", tps: 4 }] }, "symbols", theme, DIM, list)).toBe("<dim>»4.0/s");
 	});
 
 	it("renders hex colours through the theme's colour mode", () => {
 		const list = thresholds([{ min: 0, color: "#ff8800" }]);
-		expect(renderSegments([{ text: "Δ9.0", tps: 9 }], theme, DIM, list)).toBe("<#ff8800>Δ9.0");
+		expect(renderLine({ segments: [{ text: "»9.0/s", tps: 9 }] }, "symbols", theme, DIM, list)).toBe("<#ff8800>»9.0/s");
 		expect(paint(theme, { kind: "hex", hex: "#f80" }, "x")).toBe("<#ff8800>x");
 	});
 });

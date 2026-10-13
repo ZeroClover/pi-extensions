@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Clock } from "../src/clock.ts";
 import type { DeltaEstimator, StreamKind } from "../src/estimator.ts";
 import { contentDelta, type EndInput, type EndOutcome, Measurement, type RequestContext } from "../src/measurement.ts";
-import type { TelemetryRecord } from "../src/telemetry.ts";
+import type { RequestRecord } from "../src/telemetry.ts";
 
 class FakeClock implements Clock {
 	t = 0;
@@ -30,7 +30,7 @@ function end(output: number, overrides: Partial<EndInput> = {}): EndInput {
 	return { stopReason: "stop", provider: "p", model: "m", usage: usage(output), ...overrides };
 }
 
-function recorded(outcome: EndOutcome): { record: TelemetryRecord; calibration?: unknown } {
+function recorded(outcome: EndOutcome): { record: RequestRecord; calibration?: unknown } {
 	if (outcome.kind !== "recorded") throw new Error(`expected a record, got ${outcome.kind}`);
 	return outcome;
 }
@@ -115,6 +115,17 @@ describe("request lifecycle", () => {
 		start();
 		expect(meter.reset()).toBe(true);
 		expect(meter.reset()).toBe(false);
+	});
+
+	it("switches to the serving model at message start without moving the timing origin (virtual model)", () => {
+		meter.turnStart();
+		meter.requestStart({ provider: "router", model: "auto", wallTime: 1 });
+		clock.t = 200;
+		meter.messageStart({ provider: "anthropic", model: "claude-sonnet-4", ratio: 1.3 });
+		stream("text", 500, 20, 100, 10);
+		const snapshot = meter.snapshot();
+		expect(snapshot).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4", calibrated: true, ttftMs: 500 });
+		expect(snapshot?.outputTokens).toBeCloseTo(260);
 	});
 
 	it("reports waiting with a counting elapsed time before the first delta", () => {
@@ -310,6 +321,14 @@ describe("settlement from provider usage", () => {
 		expect(recorded(meter.end(end(330))).calibration).toEqual({ reported: 330, estimated: 300 });
 	});
 
+	it("samples (output − reasoning) / raw output estimate with a reasoning breakdown", () => {
+		start();
+		stream("thinking", 0, 5, 100, 10);
+		stream("text", 1000, 25, 100, 10);
+		const outcome = recorded(meter.end(end(900, { usage: usage(900, { reasoning: 600 }) })));
+		expect(outcome.calibration).toEqual({ reported: 300, estimated: 250 });
+	});
+
 	it("calibrates on visible output when thinking was summarised", () => {
 		start();
 		stream("thinking", 0, 2, 100, 10);
@@ -328,7 +347,39 @@ describe("settlement from provider usage", () => {
 	});
 });
 
+describe("inconsistent usage", () => {
+	it("caps reasoning at the output and treats invalid counts as 0", () => {
+		start();
+		stream("text", 0, 20, 100, 10);
+		const { record } = recorded(
+			meter.end(end(300, { usage: usage(300, { reasoning: 500, input: -5, cacheRead: Number.NaN }) })),
+		);
+		expect(record.reasoningTokens).toBe(300);
+		expect(record.thinkingTokens).toBe(300);
+		expect(record.inputTokens).toBe(0);
+		expect(record.cacheReadTokens).toBe(0);
+	});
+});
+
 describe("burst requests", () => {
+	it("mark a successful request without deltas and report its throughput", () => {
+		start();
+		clock.t = 2000;
+		const { record } = recorded(meter.end(end(120)));
+		expect(record.burstReason).toBe("few-batches");
+		expect(record.throughputTps).toBe(60);
+		expect(record.deltaCount).toBe(0);
+	});
+
+	it("treat a short response in few batches as too short to measure, not as burst", () => {
+		start();
+		stream("text", 500, 3, 100, 4);
+		const { record } = recorded(meter.end(end(12)));
+		expect(record.burst).toBe(false);
+		expect(record.outputTps).toBeUndefined();
+		expect(record.throughputTps).toBeUndefined();
+	});
+
 	it("report throughput for a response in one chunk", () => {
 		start();
 		clock.t = 4000;

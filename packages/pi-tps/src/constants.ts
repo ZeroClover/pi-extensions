@@ -13,8 +13,11 @@ export const MIN_SETTLED_SPAN_MS = 1000;
 /** Deltas closer than this to their predecessor arrived in the same network read and form one batch. */
 export const BURST_BATCH_GAP_MS = 1;
 
-/** Burst criterion: fewer arrival batches than this. */
+/** Burst criterion: fewer arrival batches than this, for a response of at least {@link BURST_MIN_TOKENS}. */
 export const BURST_MIN_BATCHES = 5;
+
+/** Below this many output tokens, a response in few batches is too short to measure rather than buffered. */
+export const BURST_MIN_TOKENS = 50;
 
 /** Burst criterion: width of the window searched for a token cluster. */
 export const BURST_CLUSTER_WINDOW_MS = 100;
@@ -40,8 +43,11 @@ export const CALIBRATION_MAX_RATIO = 4;
 /** Requests whose raw estimate is not above this are too small to calibrate from. */
 export const CALIBRATION_MIN_ESTIMATE = 50;
 
-/** Trailing context, in characters, used to estimate a delta where it joins the previous text. */
-export const ESTIMATOR_CONTEXT_CHARS = 64;
+/** An open trailing segment longer than this is committed in chunks, bounding the work per delta. */
+export const ESTIMATOR_MAX_OPEN_CHARS = 512;
+
+/** Size of the chunks committed from an over-long open segment; each commit costs at most one token of rounding. */
+export const ESTIMATOR_COMMIT_CHARS = 256;
 
 /** A difference above this between Pi's `durationMs` and the measured elapsed time is recorded. */
 export const CLOCK_SKEW_THRESHOLD_MS = 250;
@@ -51,6 +57,9 @@ export const DEFAULT_TICK_INTERVAL_MS = 100;
 
 /** Smallest accepted ticker interval. */
 export const MIN_TICK_INTERVAL_MS = 50;
+
+/** Largest accepted ticker interval; beyond it the readout would lag and Node clamps huge values to 1 ms. */
+export const MAX_TICK_INTERVAL_MS = 1000;
 
 /** Key under which the readout is written with `ctx.ui.setStatus`. */
 export const STATUS_KEY = "pi-tps";

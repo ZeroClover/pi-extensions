@@ -1,5 +1,5 @@
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
-import { DEFAULT_TICK_INTERVAL_MS, MIN_TICK_INTERVAL_MS } from "./constants.ts";
+import { DEFAULT_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS, MIN_TICK_INTERVAL_MS } from "./constants.ts";
 import { errorMessage } from "./files.ts";
 import type { SummaryMode } from "./telemetry.ts";
 
@@ -40,10 +40,14 @@ export interface Override {
 	thresholds: Threshold[];
 }
 
+/** How fields are named: short words (`TPS 48.6 tok/s · TTFT 1.2s`) or single-cell symbols (`»48.6/s ⇥1.2s`). */
+export type LabelStyle = "text" | "symbols";
+
 export interface TpsConfig {
 	/** Initial visibility of the readout; `/tps` toggles it per session. */
 	enabled: boolean;
 	persist: boolean;
+	labels: LabelStyle;
 	summaryMode: SummaryMode;
 	baseColor: ColorSpec;
 	animation: AnimationConfig;
@@ -125,6 +129,7 @@ export function defaultConfig(): TpsConfig {
 	return {
 		enabled: true,
 		persist: true,
+		labels: "text",
 		summaryMode: "last",
 		baseColor: token("dim"),
 		animation: { enabled: true, intervalMs: DEFAULT_TICK_INTERVAL_MS, frames: [...DEFAULT_FRAMES] },
@@ -233,7 +238,29 @@ export function resolveThresholds(config: TpsConfig, provider: string, model: st
 	return best?.thresholds ?? config.thresholds;
 }
 
-const KNOWN_KEYS = new Set(["enabled", "persist", "summaryMode", "baseColor", "animation", "thresholds", "overrides"]);
+// Control characters (newlines, escapes) would break the footer line or inject terminal sequences.
+function hasControlCharacter(text: string): boolean {
+	for (let i = 0; i < text.length; i++) {
+		const code = text.charCodeAt(i);
+		if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true;
+	}
+	return false;
+}
+
+function isFrame(frame: unknown): frame is string {
+	return typeof frame === "string" && frame.length > 0 && !hasControlCharacter(frame);
+}
+
+const KNOWN_KEYS = new Set([
+	"enabled",
+	"persist",
+	"labels",
+	"summaryMode",
+	"baseColor",
+	"animation",
+	"thresholds",
+	"overrides",
+]);
 
 /**
  * Parses the configuration file content. Every problem produces one warning and falls back to the default of
@@ -267,7 +294,10 @@ export function parseConfig(text: string | undefined, source: string): { config:
 		else warn(`${key}: expected true or false; using ${config[key]}`);
 	}
 
-	const { summaryMode, baseColor, animation, thresholds, overrides } = json;
+	const { labels, summaryMode, baseColor, animation, thresholds, overrides } = json;
+
+	if (labels === "text" || labels === "symbols") config.labels = labels;
+	else if (labels !== undefined) warn(`labels: expected "text" or "symbols"; using "${config.labels}"`);
 	if (summaryMode === "last" || summaryMode === "session") config.summaryMode = summaryMode;
 	else if (summaryMode !== undefined) warn(`summaryMode: expected "last" or "session"; using "${config.summaryMode}"`);
 
@@ -284,19 +314,19 @@ export function parseConfig(text: string | undefined, source: string): { config:
 			const { enabled, intervalMs, frames } = animation;
 			if (typeof enabled === "boolean") config.animation.enabled = enabled;
 			else if (enabled !== undefined) warn("animation.enabled: expected true or false; using true");
-			if (typeof intervalMs === "number" && Number.isFinite(intervalMs) && intervalMs >= MIN_TICK_INTERVAL_MS) {
+			if (typeof intervalMs === "number" && intervalMs >= MIN_TICK_INTERVAL_MS && intervalMs <= MAX_TICK_INTERVAL_MS) {
 				config.animation.intervalMs = intervalMs;
 			} else if (intervalMs !== undefined) {
-				warn(`animation.intervalMs: expected a number >= ${MIN_TICK_INTERVAL_MS}; using ${DEFAULT_TICK_INTERVAL_MS}`);
+				warn(
+					`animation.intervalMs: expected a number from ${MIN_TICK_INTERVAL_MS} to ${MAX_TICK_INTERVAL_MS}; using ${DEFAULT_TICK_INTERVAL_MS}`,
+				);
 			}
-			if (
-				Array.isArray(frames) &&
-				frames.length > 0 &&
-				frames.every((frame: unknown) => typeof frame === "string" && frame.length > 0)
-			) {
-				config.animation.frames = frames.filter((frame: unknown) => typeof frame === "string");
+			if (Array.isArray(frames) && frames.length > 0 && frames.every(isFrame)) {
+				config.animation.frames = frames.filter(isFrame);
 			} else if (frames !== undefined) {
-				warn("animation.frames: expected a non-empty array of non-empty strings; using the default spinner");
+				warn(
+					"animation.frames: expected a non-empty array of non-empty strings without control characters; using the default spinner",
+				);
 			}
 		}
 	}

@@ -16,8 +16,8 @@ export function parseTpsCommand(args: string): TpsCommand {
 }
 
 const COMPLETIONS = [
-	{ value: "mode", label: "mode", description: "Switch the idle readout between last request and session average" },
-	{ value: "mode last", label: "mode last", description: "Show the last request when idle" },
+	{ value: "mode", label: "mode", description: "Switch the idle readout between last run and session average" },
+	{ value: "mode last", label: "mode last", description: "Show the last run's summary when idle" },
 	{ value: "mode session", label: "mode session", description: "Show session averages when idle" },
 ];
 

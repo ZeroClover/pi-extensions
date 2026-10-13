@@ -14,14 +14,22 @@ Configuration SHALL be read from `<agent-dir>/pi-tps.json` (the directory return
 - **THEN** defaults apply and no warning is shown
 
 ### Requirement: Configuration schema
-The file SHALL be a JSON object with optional keys: `enabled` (boolean), `persist` (boolean, default true), `summaryMode` (`"last"` | `"session"`), `baseColor` (colour), `animation` ({ `enabled`: boolean, `intervalMs`: number ≥ 50, `frames`: string[] }), `thresholds` (threshold list), and `overrides` (object mapping match keys to threshold lists).
+The file SHALL be a JSON object with optional keys: `enabled` (boolean), `persist` (boolean, default true), `labels` (`"text"` | `"symbols"`, default `"text"`), `summaryMode` (`"last"` | `"session"`), `baseColor` (colour), `animation` ({ `enabled`: boolean, `intervalMs`: number from 50 to 1000, `frames`: non-empty strings without control characters }), `thresholds` (threshold list), and `overrides` (object mapping match keys to threshold lists).
 
 #### Scenario: Partial file
 - **WHEN** the file contains only `{ "summaryMode": "session" }`
 - **THEN** every other setting keeps its default
 
+#### Scenario: Symbol labels
+- **WHEN** the file contains `{ "labels": "symbols" }`
+- **THEN** the readout uses the symbol style after the next session start or `/reload`
+
+#### Scenario: Unknown label style
+- **WHEN** `labels` is `"emoji"`
+- **THEN** the text style applies and one warning names `labels`
+
 ### Requirement: Threshold list
-A threshold list SHALL be an array of `{ "min": number, "color": colour }` entries. Entries SHALL be sorted by `min` for resolution; the default list SHALL be `[{min:0,color:"error"},{min:30,color:"warning"},{min:80,color:"success"}]`.
+A threshold list SHALL be an array of `{ "min": number, "color": colour }` entries. Entries SHALL be sorted by `min` for resolution, entries with equal `min` keeping their file order so that the later one wins; an empty list leaves the TPS in the base colour; the default list SHALL be `[{min:0,color:"error"},{min:30,color:"warning"},{min:80,color:"success"}]`.
 
 #### Scenario: Unsorted input
 - **WHEN** the list is given as 80, 0, 30
@@ -50,7 +58,7 @@ Override keys SHALL be of the form `provider/model`, `model` (no slash) or `prov
 - **THEN** the override matches
 
 ### Requirement: Override precedence
-When several override keys match, precedence SHALL be: exact `provider/model`, then `provider/<glob>`, then model-only (exact before glob), then `provider/*`, then the global `thresholds`. Within one level a more specific pattern (fewer wildcard-matched characters) SHALL win.
+When several override keys match, precedence SHALL be: exact `provider/model`, then `provider/<glob>`, then model-only (exact before glob), then `provider/*`, then the global `thresholds`. Within one level a more specific pattern (fewer wildcard-matched characters) SHALL win, and among equally specific patterns the first in the file.
 
 #### Scenario: Exact beats glob
 - **WHEN** both `anthropic/claude-sonnet-4` and `anthropic/claude-*` are configured
@@ -70,3 +78,11 @@ Invalid JSON, a non-object top level, or an invalid field SHALL produce one warn
 #### Scenario: Bad interval
 - **WHEN** `animation.intervalMs` is `"fast"`
 - **THEN** the default interval applies and one warning names `animation.intervalMs`
+
+#### Scenario: Interval out of range
+- **WHEN** `animation.intervalMs` is 2147483648
+- **THEN** the default interval applies and one warning names `animation.intervalMs`
+
+#### Scenario: Frame with a newline
+- **WHEN** `animation.frames` contains `"a\nb"`
+- **THEN** the default spinner applies and one warning names `animation.frames`

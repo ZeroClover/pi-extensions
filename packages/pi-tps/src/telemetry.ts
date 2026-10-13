@@ -1,10 +1,12 @@
-/** `customType` of the session entries holding telemetry records. */
+/** `customType` of the session entries holding run records. */
 export const TELEMETRY_CUSTOM_TYPE = "pi-tps";
 
-/** Event-bus channel carrying a {@link StatusSnapshot}, or `null` when the readout is cleared. */
+/** Event-bus channel carrying a {@link StatusSnapshot}, or `null` when the session shuts down. */
 export const STATUS_CHANNEL = "pi-tps:status";
-/** Event-bus channel carrying each persisted {@link TelemetryRecord}. */
+/** Event-bus channel carrying each {@link RequestRecord} as its request settles or aborts. */
 export const TELEMETRY_CHANNEL = "pi-tps:telemetry";
+/** Event-bus channel carrying each {@link RunRecord} when its run settles; equal to the persisted entry data. */
+export const RUN_CHANNEL = "pi-tps:run";
 /** Emitting on this channel makes pi-tps re-emit the current snapshot on {@link STATUS_CHANNEL}. */
 export const REQUEST_CHANNEL = "pi-tps:request";
 
@@ -15,8 +17,7 @@ export type BurstReason = "few-batches" | "cluster" | "rate";
 export type SummaryMode = "last" | "session";
 
 /** One measured request. Durations are milliseconds on a monotonic clock, rates are tokens per second. */
-export interface TelemetryRecord {
-	version: typeof TELEMETRY_VERSION;
+export interface RequestRecord {
 	/** Wall-clock milliseconds when the request was sent. */
 	timestamp: number;
 	provider: string;
@@ -33,6 +34,8 @@ export interface TelemetryRecord {
 	headersMs?: number;
 	/** Request start to `message_end`. */
 	elapsedMs: number;
+	/** Active output span: gaps between consecutive output deltas, stalls excluded. */
+	outputMs: number;
 	/** Visible output tokens over the active output span. Absent for bursts and spans under 1 s. */
 	outputTps?: number;
 	/** Thinking tokens over the active thinking span. */
@@ -47,6 +50,7 @@ export interface TelemetryRecord {
 	/** True when a reported figure relies on the token estimate instead of provider usage. */
 	estimated: boolean;
 	inputTokens: number;
+	/** Total output tokens including thinking (`usage.output`, or the calibrated estimate without usage). */
 	outputTokens: number;
 	cacheReadTokens: number;
 	cacheWriteTokens: number;
@@ -60,18 +64,50 @@ export interface TelemetryRecord {
 	clockSkewMs?: number;
 }
 
-export interface SessionAggregate {
-	count: number;
-	meanTtftMs?: number;
-	/** Over settled, non-burst requests with an output TPS. */
-	meanOutputTps?: number;
-	meanThinkingTps?: number;
+/** One agent run: everything between `agent_start` and `agent_settled`. */
+export interface RunRecord {
+	version: typeof TELEMETRY_VERSION;
+	/** Wall-clock milliseconds when the run started. */
+	startedAt: number;
+	/** Run wall time on the monotonic clock. */
+	elapsedMs: number;
+	aborted: boolean;
+	requests: RequestRecord[];
+}
+
+/** Figures aggregated over request records; the same method serves runs and sessions. */
+export interface Aggregate {
+	requests: number;
+	/** Visible output tokens over active output spans of settled, non-burst requests. */
+	tps?: number;
+	/** Whether a request contributing to the TPS relied on the estimate. */
+	estimated: boolean;
+	/** Output tokens over elapsed time of burst requests, only when no request contributes to the TPS. */
+	burstTps?: number;
+	/** Mean over non-aborted requests. */
+	ttftMs?: number;
 	inputTokens: number;
-	outputTokens: number;
 	cacheReadTokens: number;
 	cacheWriteTokens: number;
-	/** Over records that carry a cost; absent when none does. */
+	/** Output tokens without thinking. */
+	visibleOutputTokens: number;
+	thinkingTokens: number;
+	thinkingMs: number;
+	stallMs: number;
+	stallCount: number;
 	cost?: number;
+	/** Model of the last request contributing to the TPS (else the last request), for the colour thresholds. */
+	provider?: string;
+	model?: string;
+}
+
+export interface RunSummary extends Aggregate {
+	elapsedMs: number;
+	aborted: boolean;
+}
+
+export interface SessionSummary extends Aggregate {
+	runs: number;
 }
 
 /** Figures of the request in flight. */
@@ -79,27 +115,34 @@ export interface LiveSnapshot {
 	phase: "waiting" | "streaming";
 	provider: string;
 	model: string;
+	/** Number of the request within its run, starting at 1. */
+	request: number;
 	elapsedMs: number;
 	ttftMs?: number;
 	/** Calibrated output tokens per second over the live window; absent during warm-up. */
 	liveTps?: number;
-	/** Calibrated estimate of output tokens so far. */
+	/** Calibrated estimate of visible output tokens so far. */
 	outputTokens: number;
 	thinkingTokens?: number;
 	thinkingMs?: number;
-	/** False when the active model has no calibration ratio yet. */
+	/** False when the serving model has no calibration ratio yet. */
 	calibrated: boolean;
+}
+
+/** A run is active between requests, typically while tools execute. */
+export interface WorkingSnapshot {
+	phase: "working";
+	elapsedMs: number;
+	requests: number;
+	/** Visible output tokens of the run's requests so far. */
+	outputTokens: number;
 }
 
 export type StatusSnapshot =
 	| LiveSnapshot
-	| {
-			phase: "last";
-			record: TelemetryRecord;
-			/** Output TPS of the most recent earlier request that had one, shown when `record` has none. */
-			fallbackTps?: number;
-	  }
-	| { phase: "session"; aggregate: SessionAggregate }
+	| WorkingSnapshot
+	| { phase: "run"; run: RunSummary }
+	| { phase: "session"; session: SessionSummary }
 	| { phase: "empty"; mode: SummaryMode };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -116,16 +159,21 @@ function finite(value: unknown): value is number {
 	return typeof value === "number" && Number.isFinite(value);
 }
 
-/** Validates an entry's data as a version-1 record. Unknown versions and malformed shapes yield `undefined`. */
-export function parseRecord(data: unknown): TelemetryRecord | undefined {
+/** Counts, durations and rates in a record are never negative. */
+function nonNegative(value: unknown): value is number {
+	return finite(value) && value >= 0;
+}
+
+/** Validates one request record. Malformed shapes yield `undefined`. */
+export function parseRequestRecord(data: unknown): RequestRecord | undefined {
 	if (!isRecord(data)) return undefined;
 	const {
-		version,
 		outcome,
 		provider,
 		model,
 		timestamp,
 		elapsedMs,
+		outputMs,
 		inputTokens,
 		outputTokens,
 		cacheReadTokens,
@@ -139,33 +187,33 @@ export function parseRecord(data: unknown): TelemetryRecord | undefined {
 		responseModel,
 		burstReason,
 	} = data;
-	if (version !== TELEMETRY_VERSION) return undefined;
 	if (outcome !== "settled" && outcome !== "aborted") return undefined;
 	if (typeof provider !== "string" || typeof model !== "string") return undefined;
 	if (
-		!finite(timestamp) ||
-		!finite(elapsedMs) ||
-		!finite(inputTokens) ||
-		!finite(outputTokens) ||
-		!finite(cacheReadTokens) ||
-		!finite(cacheWriteTokens) ||
-		!finite(deltaCount) ||
-		!finite(stallCount) ||
-		!finite(stallMs) ||
+		!nonNegative(timestamp) ||
+		!nonNegative(elapsedMs) ||
+		!nonNegative(outputMs) ||
+		!nonNegative(inputTokens) ||
+		!nonNegative(outputTokens) ||
+		!nonNegative(cacheReadTokens) ||
+		!nonNegative(cacheWriteTokens) ||
+		!nonNegative(deltaCount) ||
+		!nonNegative(stallCount) ||
+		!nonNegative(stallMs) ||
 		typeof burst !== "boolean" ||
 		typeof thinkingObserved !== "boolean" ||
 		typeof estimated !== "boolean"
 	) {
 		return undefined;
 	}
-	const record: TelemetryRecord = {
-		version: TELEMETRY_VERSION,
+	const record: RequestRecord = {
 		timestamp,
 		provider,
 		model,
 		outcome,
 		burst,
 		elapsedMs,
+		outputMs,
 		thinkingObserved,
 		estimated,
 		inputTokens,
@@ -194,8 +242,25 @@ export function parseRecord(data: unknown): TelemetryRecord | undefined {
 	for (const key of optional) {
 		const value = data[key];
 		if (value === undefined) continue;
-		if (!finite(value)) return undefined;
+		// The clock skew is signed; every other optional figure is a count, a duration or a rate.
+		if (!finite(value) || (key !== "clockSkewMs" && value < 0)) return undefined;
 		record[key] = value;
 	}
 	return record;
+}
+
+/** Validates an entry's data as a version-1 run record. Unknown versions and malformed shapes yield `undefined`. */
+export function parseRunRecord(data: unknown): RunRecord | undefined {
+	if (!isRecord(data)) return undefined;
+	const { version, startedAt, elapsedMs, aborted, requests } = data;
+	if (version !== TELEMETRY_VERSION) return undefined;
+	if (!nonNegative(startedAt) || !nonNegative(elapsedMs) || typeof aborted !== "boolean") return undefined;
+	if (!Array.isArray(requests) || requests.length === 0) return undefined;
+	const parsed: RequestRecord[] = [];
+	for (const request of requests) {
+		const record = parseRequestRecord(request);
+		if (!record) return undefined;
+		parsed.push(record);
+	}
+	return { version: TELEMETRY_VERSION, startedAt, elapsedMs, aborted, requests: parsed };
 }

@@ -50,6 +50,35 @@ describe("parseConfig", () => {
 		expect(load({ animation: { intervalMs: 10 } }).config.animation.intervalMs).toBe(100);
 	});
 
+	it("rejects intervals above 1000 ms (interval out of range)", () => {
+		const { config, warnings } = load({ animation: { intervalMs: 2147483648 } });
+		expect(config.animation.intervalMs).toBe(100);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("animation.intervalMs");
+		expect(load({ animation: { intervalMs: 1000 } }).config.animation.intervalMs).toBe(1000);
+	});
+
+	it("rejects frames with control characters (frame with a newline)", () => {
+		const { config, warnings } = load({ animation: { frames: ["a\nb", "c"] } });
+		expect(config.animation.frames).toEqual(defaultConfig().animation.frames);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("animation.frames");
+		expect(load({ animation: { frames: ["\u001b[31m"] } }).warnings).toHaveLength(1);
+	});
+
+	it("keeps file order for thresholds with equal min, so the later one wins", () => {
+		const { config } = load({
+			thresholds: [
+				{ min: 10, color: "error" },
+				{ min: 10, color: "success" },
+			],
+		});
+		expect(config.thresholds.map((t) => t.color)).toEqual([
+			{ kind: "token", token: "error" },
+			{ kind: "token", token: "success" },
+		]);
+	});
+
 	it("rejects an unknown colour token and uses the default colour for that entry", () => {
 		const { config, warnings } = load({
 			thresholds: [
@@ -76,6 +105,20 @@ describe("parseConfig", () => {
 		expect(config.persist).toBe(true);
 		expect(warnings).toHaveLength(1);
 		expect(warnings[0]).toContain("persist");
+	});
+
+	it("selects the symbol style (symbol labels)", () => {
+		const { config, warnings } = load({ labels: "symbols" });
+		expect(warnings).toEqual([]);
+		expect(config.labels).toBe("symbols");
+		expect(defaultConfig().labels).toBe("text");
+	});
+
+	it("rejects an unknown label style", () => {
+		const { config, warnings } = load({ labels: "emoji" });
+		expect(config.labels).toBe("text");
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("labels");
 	});
 
 	it("accepts persist false", () => {
@@ -194,6 +237,11 @@ describe("resolveThresholds", () => {
 		expect(resolved("mistral", "large")).toBe("border");
 		const global = defaultConfig();
 		expect(resolveThresholds(global, "mistral", "large")).toBe(global.thresholds);
+	});
+
+	it("prefers the first of equally specific patterns", () => {
+		const tie = load({ overrides: { "claude-*-4": level("warning"), "claude-4-*": level("error") } }).config;
+		expect(resolveThresholds(tie, "x", "claude-4-4")[0]?.color).toEqual({ kind: "token", token: "warning" });
 	});
 
 	it("prefers the more specific pattern within one level", () => {

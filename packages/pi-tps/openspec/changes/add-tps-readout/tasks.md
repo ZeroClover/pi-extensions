@@ -41,6 +41,28 @@
 - [x] 7.1 Complete `packages/pi-tps/README.md` (purpose, install, `/tps` command table, readout glyph legend, measurement definitions and limitations from design.md, event-bus contract) and add the `pi-tps` row to the root `README.md` table; verify both render the same command and setting names as the code
 - [x] 7.2 Run `pnpm check` from the repository root and the load smoke test; verify both pass with no new warnings
 
+## 8. Review fixes (REVIEW.md)
+
+- [x] 8.1 F1: rework `src/estimator.ts` to keep the open trailing segment and commit complete segments (long open tails in 256-character chunks); verify `test/estimator.test.ts` covers "Long digit run" in 1, 2, 4 and 128-character deltas plus identifiers, punctuation runs, English, CJK and JSON within 2 % of the whole-text estimate, and the existing 30 % fixtures
+- [x] 8.2 F2: let `Measurement` replace the request identity (provider, model, ratio) from the assistant `message_start` without moving the timing origin, and resolve thresholds from it in `index.ts`; verify `test/measurement.test.ts` covers "Virtual model"
+- [x] 8.3 F3: add an exclusive lock-file section to `src/files.ts` and use it for the calibration read-merge-write; verify `test/calibration.test.ts` covers "Concurrent sessions" with an injected file layer that interleaves two stores, for different keys and the same key
+- [x] 8.4 F4: keep keys whose write failed authoritative over the disk copy until a write succeeds; verify "Unwritable file" (ratio keeps converging) in `test/calibration.test.ts`
+- [x] 8.5 F6 and configuration edges: `animation.intervalMs` limited to 50–1000, frames without control characters, equal-`min` and equal-specificity tie rules; verify `test/config.test.ts` covers "Interval out of range", "Frame with a newline" and both tie rules
+- [x] 8.6 Measurement edges: sanitise usage counts (negative or non-finite → 0), cap reasoning at the output, mark successful requests without deltas as burst, reject records with negative counts; verify "Inconsistent usage" and "Successful request without deltas" in `test/measurement.test.ts` and the record validation in `test/aggregate.test.ts`
+- [x] 8.7 Calibration rules from spec `token-estimation`: verify `test/calibration.test.ts` and `test/measurement.test.ts` cover "Reasoning breakdown", "Outlier as first sample", "Outlier after calibration" and "Tiny response"; F5 (aborted TTFT), S2 (stale TPS fallback), S3 (visible output) and the README `/tree` statement are resolved by section 9
+
+## 9. Run-level summary and label styles
+
+- [x] 9.1 Extend `src/telemetry.ts` with the versioned run record (`startedAt`, `elapsedMs`, `aborted`, `requests`), its parser, the `working` live phase, run and session snapshot shapes and the `pi-tps:run` channel; verify `test/aggregate.test.ts` round-trips a run record and skips unknown versions and foreign entries
+- [x] 9.2 Rewrite `src/aggregate.ts` around one aggregation over request records (token-weighted TPS over settled non-burst requests with the 1 s minimum, burst throughput fallback, mean TTFT over non-aborted requests, sums of tokens, stalls, thinking and cost) used for runs and sessions, plus reconstruction of the run list from entries; verify tests cover "Token-weighted TPS", "Burst and aborted requests", "Mixed runs" and the persistence-off case from spec `telemetry-history`
+- [x] 9.3 Implement `src/run.ts` (start at the first `agent_start`, join later ones, collect records, settle with elapsed time and the aborted flag, discard runs without records) with an injected clock; verify `test/run.test.ts` covers "Tool calls", "Automatic retry after an error" and the empty run
+- [x] 9.4 Add the `labels` key to `src/config.ts`; verify `test/config.test.ts` covers "Symbol labels" and "Unknown label style"
+- [x] 9.5 Rewrite `src/format.ts` with one field layout per phase (waiting, streaming, working, run summary, session, empty) printed in the text or symbol style, and the new number and duration formatting; verify `test/format.test.ts` covers every phase in both styles and every scenario under "Label styles", "Symbol set", "Readout phases", "Summary only after the run settles" and "Number formatting"
+- [x] 9.6 Rewire `src/index.ts`: `agent_start`/`agent_settled` drive the run and the ticker, request settlement adds records without rendering a summary, the summary renders and persists at `agent_settled`, `pi-tps:telemetry` per request and `pi-tps:run` per run; verify `pnpm check` and the RPC load smoke test
+- [x] 9.7 Update `packages/pi-tps/README.md` (readout in both styles, symbol legend, run semantics, `labels` setting, per-run persistence, event channels) and the root README description; verify the documented names match the code and the README example config still loads without warnings
+- [x] 9.8 Live verification in a TUI session: a prompt with tool calls shows waiting, streaming and working phases and a single summary after the run settles; both label styles render; Escape gives the aborted summary; `/reload` and `/tree` restore the last run and session figures; print and RPC modes append one `pi-tps` entry per run and send no status text; record the observed readouts in the final report
+- [x] 9.9 Run `pnpm check` from the repository root and the load smoke test; verify both pass with no new warnings
+
 ## Workflow follow-up
 
 - Archive the change after review (`openspec archive add-tps-readout` from `packages/pi-tps`), then commit as `feat(pi-tps): add live TPS readout`.

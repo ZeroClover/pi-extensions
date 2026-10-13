@@ -4,6 +4,7 @@ import {
 	BURST_CLUSTER_SHARE,
 	BURST_CLUSTER_WINDOW_MS,
 	BURST_MIN_BATCHES,
+	BURST_MIN_TOKENS,
 	MAX_PLAUSIBLE_TPS,
 } from "./constants.ts";
 import type { BurstReason } from "./telemetry.ts";
@@ -50,11 +51,16 @@ export function largestClusterShare(timeline: DeltaTimeline): number {
 
 /**
  * Classifies a request as burst delivery (a buffered response flushed at once) rather than streaming.
- * `peakTps` is the highest generation rate computed for the request, if any.
+ * `outputTokens` is the response's output token count; `peakTps` the highest rate computed for it, if any.
+ * A response under {@link BURST_MIN_TOKENS} in few batches is merely short, not buffered.
  */
-export function classifyBurst(timeline: DeltaTimeline, peakTps?: number): BurstReason | undefined {
+export function classifyBurst(
+	timeline: DeltaTimeline,
+	outputTokens: number,
+	peakTps?: number,
+): BurstReason | undefined {
 	const { at } = timeline;
-	if (countBatches(at) < BURST_MIN_BATCHES) return "few-batches";
+	if (countBatches(at) < BURST_MIN_BATCHES && outputTokens >= BURST_MIN_TOKENS) return "few-batches";
 	// The span is first to last delta, stalls included: a flush after a long silence is exactly what this catches.
 	const span = (at.at(-1) ?? 0) - (at[0] ?? 0);
 	if (span > BURST_CLUSTER_MIN_SPAN_MS && largestClusterShare(timeline) >= BURST_CLUSTER_SHARE) return "cluster";

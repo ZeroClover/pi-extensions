@@ -11,17 +11,43 @@ import type { FileLayer } from "../src/files.ts";
 
 const PATH = "/agent/pi-tps-calibration.json";
 
-function memoryFiles(initial?: string): FileLayer & { content: string | undefined; writes: number } {
-	const files = {
+interface MemoryFiles extends FileLayer {
+	content: string | undefined;
+	writes: number;
+	locked: boolean;
+	/** Runs once inside the next write, before the content changes: lets a test interleave another session. */
+	beforeWrite: (() => void) | undefined;
+}
+
+function memoryFiles(initial?: string): MemoryFiles {
+	const files: MemoryFiles = {
 		content: initial,
 		writes: 0,
-		read: (_path: string) => files.content,
-		write: (_path: string, content: string) => {
+		locked: false,
+		beforeWrite: undefined,
+		read: () => files.content,
+		write: (_path, content) => {
+			const hook = files.beforeWrite;
+			files.beforeWrite = undefined;
+			hook?.();
 			files.writes++;
 			files.content = content;
 		},
+		lock: () => {
+			if (files.locked) return undefined;
+			files.locked = true;
+			return () => {
+				files.locked = false;
+			};
+		},
 	};
 	return files;
+}
+
+function ratioOnDisk(files: MemoryFiles, key: string): number | undefined {
+	const store = new CalibrationStore(PATH, files);
+	store.load();
+	return store.ratio(key);
 }
 
 describe("calibrationKey", () => {
@@ -59,6 +85,12 @@ describe("nextEntry", () => {
 	it("clamps outliers", () => {
 		expect(nextEntry(undefined, { reported: 900, estimated: 100 }, 0).ratio).toBe(4);
 		expect(nextEntry(undefined, { reported: 10, estimated: 100 }, 0).ratio).toBe(0.25);
+	});
+
+	it("clamps an outlier sample before averaging it into an existing ratio", () => {
+		expect(nextEntry({ ratio: 1, samples: 3, updatedAt: 0 }, { reported: 900, estimated: 100 }, 1).ratio).toBeCloseTo(
+			1.9,
+		);
 	});
 });
 
@@ -106,6 +138,7 @@ describe("CalibrationStore", () => {
 				throw new Error("EACCES");
 			},
 			write: () => {},
+			lock: () => () => {},
 		};
 		expect(new CalibrationStore(PATH, files).load()).toContain("EACCES");
 	});
@@ -129,10 +162,69 @@ describe("CalibrationStore", () => {
 		other.load();
 		other.update("x/other", { reported: 900, estimated: 600 }, 1);
 		mine.update("x/mine", { reported: 1000, estimated: 800 }, 2);
+		expect(ratioOnDisk(files, "x/other")).toBe(1.5);
+		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
+	});
+
+	it("does not lose an update made while another session holds the file (concurrent sessions)", () => {
+		const files = memoryFiles();
+		const mine = new CalibrationStore(PATH, files);
+		const other = new CalibrationStore(PATH, files);
+		mine.load();
+		other.load();
+		// While mine is inside its locked read-merge-write, other tries to update a different key.
+		files.beforeWrite = () => other.update("x/other", { reported: 900, estimated: 600 }, 1);
+		mine.update("x/mine", { reported: 1000, estimated: 800 }, 2);
+		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
+		// Other kept its sample in memory and writes it with its next update.
+		other.update("x/third", { reported: 600, estimated: 600 }, 3);
+		expect(ratioOnDisk(files, "x/other")).toBe(1.5);
+		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
+		expect(ratioOnDisk(files, "x/third")).toBe(1);
+	});
+
+	it("builds on another session's ratio for the same key", () => {
+		const files = memoryFiles();
+		const mine = new CalibrationStore(PATH, files);
+		const other = new CalibrationStore(PATH, files);
+		mine.load();
+		other.load();
+		other.update("x/m", { reported: 200, estimated: 100 }, 1);
+		mine.update("x/m", { reported: 100, estimated: 100 }, 2);
 		const restored = new CalibrationStore(PATH, files);
 		restored.load();
-		expect(restored.ratio("x/other")).toBe(1.5);
-		expect(restored.ratio("x/mine")).toBe(1.25);
+		expect(restored.entry("x/m")).toEqual({ ratio: 1.7, samples: 2, updatedAt: 2 });
+	});
+
+	it("keeps converging in memory when the file is readable but unwritable", () => {
+		const files = memoryFiles(
+			JSON.stringify({ version: 1, models: { "x/m": { ratio: 1, samples: 1, updatedAt: 0 } } }),
+		);
+		files.write = () => {
+			throw new Error("EROFS");
+		};
+		const store = new CalibrationStore(PATH, files);
+		store.load();
+		const ratios: number[] = [];
+		for (let i = 1; i <= 3; i++) {
+			store.update("x/m", { reported: 200, estimated: 100 }, i);
+			ratios.push(store.ratio("x/m") ?? 0);
+		}
+		expect(ratios[0]).toBeCloseTo(1.3);
+		expect(ratios[1]).toBeCloseTo(1.51);
+		expect(ratios[2]).toBeCloseTo(1.657);
+		expect(store.entry("x/m")?.samples).toBe(4);
+	});
+
+	it("warns once when the lock cannot be created", () => {
+		const files = memoryFiles();
+		files.lock = () => {
+			throw new Error("EACCES");
+		};
+		const store = new CalibrationStore(PATH, files);
+		expect(store.update("x/m", { reported: 200, estimated: 100 }, 1)).toContain("EACCES");
+		expect(store.update("x/m", { reported: 200, estimated: 100 }, 2)).toBeUndefined();
+		expect(store.ratio("x/m")).toBeCloseTo(2);
 	});
 
 	it("ignores samples below the minimum estimate", () => {
@@ -149,6 +241,7 @@ describe("CalibrationStore", () => {
 			write: () => {
 				throw new Error("EROFS");
 			},
+			lock: () => () => {},
 		};
 		const store = new CalibrationStore(PATH, files);
 		expect(store.update("a/b", { reported: 1000, estimated: 800 }, 0)).toContain("EROFS");

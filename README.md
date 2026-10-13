@@ -8,7 +8,7 @@ Everything here is written by AI coding agents. The rules they follow live in [`
 
 | Package | Description |
 |---|---|
-| [`pi-tps`](packages/pi-tps/) | Live tokens-per-second readout in the footer: TTFT, thinking and output speed, stalls, burst detection, calibrated estimates, session averages (`/tps`) |
+| [`pi-tps`](packages/pi-tps/) | Tokens-per-second readout in the footer: live speed while streaming, one summary per agent run (TPS, TTFT, tokens, thinking, stalls, cost), burst detection, calibrated estimates, text or symbol labels (`/tps`) |
 
 ## Layout
 

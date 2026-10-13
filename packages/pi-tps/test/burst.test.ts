@@ -10,41 +10,47 @@ function evenly(count: number, gapMs: number, tokens: number, startAt = 0): [num
 }
 
 describe("classifyBurst", () => {
+	it("does not mark a short response in few batches", () => {
+		expect(classifyBurst(timeline(evenly(3, 200, 4)), 12)).toBeUndefined();
+		expect(classifyBurst(timeline([]), 49)).toBeUndefined();
+		expect(classifyBurst(timeline([]), 50)).toBe("few-batches");
+	});
+
 	it("marks fewer than 5 batches", () => {
-		expect(classifyBurst(timeline(evenly(3, 200, 300)))).toBe("few-batches");
+		expect(classifyBurst(timeline(evenly(3, 200, 300)), 900)).toBe("few-batches");
 	});
 
 	it("marks deltas 0.3 ms apart as one batch", () => {
-		expect(classifyBurst(timeline(evenly(40, 0.3, 5)))).toBe("few-batches");
+		expect(classifyBurst(timeline(evenly(40, 0.3, 5)), 200)).toBe("few-batches");
 	});
 
 	it("does not mark several events per network read", () => {
 		const entries = Array.from({ length: 60 }, (_, batch) => evenly(5, 0.02, 1, batch * 50)).flat();
-		expect(classifyBurst(timeline(entries), 100)).toBeUndefined();
+		expect(classifyBurst(timeline(entries), 1000, 100)).toBeUndefined();
 	});
 
 	it("marks a 100 ms cluster carrying half of the tokens", () => {
 		const entries = [...evenly(20, 100, 5), ...evenly(5, 10, 40, 2500)];
-		expect(classifyBurst(timeline(entries))).toBe("cluster");
+		expect(classifyBurst(timeline(entries), 1000, 1000)).toBe("cluster");
 	});
 
 	it("marks an implausible rate", () => {
-		expect(classifyBurst(timeline(evenly(50, 20, 5)), 25_000)).toBe("rate");
+		expect(classifyBurst(timeline(evenly(50, 20, 5)), 1000, 25_000)).toBe("rate");
 	});
 
 	it("marks a proxy flush after a stall that follows normal streaming", () => {
 		const normal = evenly(10, 100, 5);
 		const flush = evenly(10, 0.2, 10, 900 + 6000);
-		expect(classifyBurst(timeline([...normal, ...flush]))).toBe("cluster");
+		expect(classifyBurst(timeline([...normal, ...flush]), 1000, 1000)).toBe("cluster");
 	});
 
 	it("does not mark genuine fast streaming", () => {
-		expect(classifyBurst(timeline(evenly(300, 3, 2)), 220)).toBeUndefined();
+		expect(classifyBurst(timeline(evenly(300, 3, 2)), 1000, 220)).toBeUndefined();
 	});
 
 	it("does not apply the cluster rule to streams of 1 s or less", () => {
 		const entries = [...evenly(5, 100, 1), [450, 100] as [number, number]];
-		expect(classifyBurst(timeline(entries))).toBeUndefined();
+		expect(classifyBurst(timeline(entries), 1000, 1000)).toBeUndefined();
 	});
 });
 

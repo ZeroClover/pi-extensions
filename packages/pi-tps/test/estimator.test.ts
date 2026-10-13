@@ -73,6 +73,25 @@ describe("StreamEstimator", () => {
 	});
 });
 
+describe("StreamEstimator chunk stability", () => {
+	const samples: [string, string][] = [
+		["a long digit run", "1234567890".repeat(100)],
+		["a long identifier", "someVeryLongIdentifierName_".repeat(40)],
+		["a punctuation run", "-=*#".repeat(150)],
+		["English prose", ENGLISH.repeat(3)],
+		["Chinese prose", CHINESE.repeat(3)],
+		["JSON tool arguments", TOOL_ARGUMENTS.repeat(5)],
+	];
+
+	it.each(samples)("keeps %s within 2 %% of the whole-text estimate for any delta size", (_name, text) => {
+		const whole = estimateTokens(text);
+		for (const size of [1, 2, 3, 4, 7, 16, 128, 1000]) {
+			const total = streamed(chunks(text, size));
+			expect(Math.abs(total - whole)).toBeLessThanOrEqual(Math.max(2, whole * 0.02));
+		}
+	});
+});
+
 describe("createDeltaEstimator", () => {
 	it("keeps a separate context per stream", () => {
 		const estimator = createDeltaEstimator();

@@ -1,7 +1,7 @@
 {
 	"name": "pi-tps",
 	"version": "0.1.0",
-	"description": "Live tokens-per-second readout in the footer: TTFT, thinking and output speed, burst detection, calibrated estimates",
+	"description": "Tokens-per-second readout in the footer: live speed while streaming and one summary per agent run, with burst detection and calibrated estimates",
 	"type": "module",
 	"keywords": [
 		"pi-package",

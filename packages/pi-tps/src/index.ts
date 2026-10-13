@@ -5,7 +5,7 @@ import {
 	type ExtensionUIContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { aggregate, lastRecord, recordsFromEntries } from "./aggregate.ts";
+import { runsFromEntries, summarizeRun, summarizeSession } from "./aggregate.ts";
 import { CALIBRATION_FILE_NAME, CalibrationStore, calibrationKey, calibrationKeys } from "./calibration.ts";
 import { monotonicClock } from "./clock.ts";
 import { parseTpsCommand, TPS_USAGE, tpsCompletions } from "./command.ts";
@@ -14,15 +14,17 @@ import { STATUS_KEY } from "./constants.ts";
 import { errorMessage, nodeFiles } from "./files.ts";
 import { formatSnapshot } from "./format.ts";
 import { contentDelta, Measurement } from "./measurement.ts";
-import { renderSegments, StatusWriter } from "./render.ts";
+import { renderLine, StatusWriter } from "./render.ts";
+import { RunTracker } from "./run.ts";
 import {
 	REQUEST_CHANNEL,
+	RUN_CHANNEL,
+	type RunRecord,
 	STATUS_CHANNEL,
 	type StatusSnapshot,
 	type SummaryMode,
 	TELEMETRY_CHANNEL,
 	TELEMETRY_CUSTOM_TYPE,
-	type TelemetryRecord,
 } from "./telemetry.ts";
 import { scheduleInterval, Ticker } from "./ticker.ts";
 
@@ -31,16 +33,18 @@ interface Runtime {
 	config: TpsConfig;
 	calibration: CalibrationStore;
 	meter: Measurement;
+	run: RunTracker;
 	ticker: Ticker;
 	writer: StatusWriter;
 	tui: boolean;
 	visible: boolean;
 	mode: SummaryMode;
-	records: TelemetryRecord[];
+	/** Settled runs: the current branch's when persisting, else this runtime's. */
+	runs: RunRecord[];
 	activeModel: { provider: string; id: string } | undefined;
-	/** Thresholds of the model of the request in flight. */
+	/** Thresholds of the model serving the request in flight. */
 	liveThresholds: Threshold[];
-	/** UI of the handler that started the ticker; held only while the ticker runs. */
+	/** UI of the handler that started the run; held only while the ticker runs. */
 	tickUi: ExtensionUIContext | undefined;
 	unsubscribeRequest: () => void;
 }
@@ -59,14 +63,16 @@ export default function (pi: ExtensionAPI): void {
 	let runtime: Runtime | undefined;
 
 	function snapshotOf(rt: Runtime): StatusSnapshot {
-		const live = rt.meter.snapshot();
+		const live = rt.meter.snapshot(rt.run.requestCount + 1);
 		if (live) return live;
+		const working = rt.run.snapshot();
+		if (working) return working;
 		if (rt.mode === "session") {
-			const totals = aggregate(rt.records);
-			return totals ? { phase: "session", aggregate: totals } : { phase: "empty", mode: rt.mode };
+			const session = summarizeSession(rt.runs);
+			return session ? { phase: "session", session } : { phase: "empty", mode: rt.mode };
 		}
-		const last = lastRecord(rt.records);
-		return last ? { phase: "last", ...last } : { phase: "empty", mode: rt.mode };
+		const last = rt.runs.at(-1);
+		return last ? { phase: "run", run: summarizeRun(last) } : { phase: "empty", mode: rt.mode };
 	}
 
 	function thresholdsFor(rt: Runtime, snapshot: StatusSnapshot): readonly Threshold[] {
@@ -74,12 +80,16 @@ export default function (pi: ExtensionAPI): void {
 			case "waiting":
 			case "streaming":
 				return rt.liveThresholds;
-			case "last":
-				return resolveThresholds(rt.config, snapshot.record.provider, snapshot.record.model);
+			case "run":
+			case "session": {
+				const summary = snapshot.phase === "run" ? snapshot.run : snapshot.session;
+				if (summary.provider !== undefined && summary.model !== undefined) {
+					return resolveThresholds(rt.config, summary.provider, summary.model);
+				}
+				return rt.config.thresholds;
+			}
 			default:
-				return rt.activeModel
-					? resolveThresholds(rt.config, rt.activeModel.provider, rt.activeModel.id)
-					: rt.config.thresholds;
+				return rt.config.thresholds;
 		}
 	}
 
@@ -95,22 +105,23 @@ export default function (pi: ExtensionAPI): void {
 		}
 		const { frames, enabled } = rt.config.animation;
 		const indicator = (enabled ? frames[rt.ticker.currentFrame % frames.length] : frames[0]) ?? "";
-		const segments = formatSnapshot(snapshot, indicator);
-		rt.writer.set(renderSegments(segments, ui.theme, rt.config.baseColor, thresholdsFor(rt, snapshot)), write);
+		const line = formatSnapshot(snapshot, rt.config.labels, indicator);
+		const text = renderLine(line, rt.config.labels, ui.theme, rt.config.baseColor, thresholdsFor(rt, snapshot));
+		rt.writer.set(text, write);
 	}
 
-	function stopLive(rt: Runtime): void {
+	function stopTicker(rt: Runtime): void {
 		rt.ticker.stop();
 		rt.tickUi = undefined;
 	}
 
 	function rebuild(rt: Runtime, ctx: ExtensionContext): void {
-		rt.records = rt.config.persist ? recordsFromEntries(ctx.sessionManager.getBranch()) : [];
+		rt.runs = runsFromEntries(ctx.sessionManager.getBranch());
 	}
 
 	pi.on("session_start", (_event, ctx) => {
 		if (runtime) {
-			stopLive(runtime);
+			stopTicker(runtime);
 			runtime.unsubscribeRequest();
 		}
 		const agentDir = getAgentDir();
@@ -124,12 +135,13 @@ export default function (pi: ExtensionAPI): void {
 			config,
 			calibration,
 			meter: new Measurement(monotonicClock),
+			run: new RunTracker(monotonicClock),
 			ticker: new Ticker(scheduleInterval, config.animation.intervalMs, () => publish(rt, rt.tickUi)),
 			writer: new StatusWriter(),
 			tui: ctx.mode === "tui",
 			visible: config.enabled,
 			mode: config.summaryMode,
-			records: [],
+			runs: [],
 			activeModel: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
 			liveThresholds: config.thresholds,
 			tickUi: undefined,
@@ -138,7 +150,7 @@ export default function (pi: ExtensionAPI): void {
 			}),
 		};
 		runtime = rt;
-		rebuild(rt, ctx);
+		if (config.persist) rebuild(rt, ctx);
 		publish(rt, ctx.ui);
 	});
 
@@ -146,8 +158,9 @@ export default function (pi: ExtensionAPI): void {
 		const rt = runtime;
 		if (!rt) return;
 		runtime = undefined;
-		stopLive(rt);
+		stopTicker(rt);
 		rt.meter.reset();
+		rt.run.discard();
 		rt.unsubscribeRequest();
 		if (rt.tui) ctx.ui.setStatus(STATUS_KEY, undefined);
 		pi.events.emit(STATUS_CHANNEL, null);
@@ -156,6 +169,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("session_tree", (_event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
+		// Without persistence the runs are this runtime's own and do not follow the branch.
 		if (rt.config.persist) rebuild(rt, ctx);
 		publish(rt, ctx.ui);
 	});
@@ -164,31 +178,45 @@ export default function (pi: ExtensionAPI): void {
 		if (runtime) runtime.activeModel = { provider: event.model.provider, id: event.model.id };
 	});
 
+	pi.on("agent_start", (_event, ctx) => {
+		const rt = runtime;
+		if (!rt?.run.start(Date.now())) return;
+		rt.tickUi = ctx.ui;
+		rt.ticker.start();
+		publish(rt, ctx.ui);
+	});
+
+	pi.on("agent_settled", (event, ctx) => {
+		const rt = runtime;
+		if (!rt) return;
+		rt.meter.reset();
+		stopTicker(rt);
+		const run = rt.run.settle(event.aborted);
+		if (run) {
+			rt.runs.push(run);
+			if (rt.config.persist) pi.appendEntry(TELEMETRY_CUSTOM_TYPE, run);
+			pi.events.emit(RUN_CHANNEL, run);
+		}
+		publish(rt, ctx.ui);
+	});
+
 	pi.on("turn_start", (_event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
 		const dropped = rt.meter.active;
 		rt.meter.turnStart();
-		if (dropped) {
-			stopLive(rt);
-			publish(rt, ctx.ui);
-		}
+		if (dropped) publish(rt, ctx.ui);
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
 		const rt = runtime;
-		if (rt?.meter.turnEnd()) {
-			stopLive(rt);
-			publish(rt, ctx.ui);
-		}
+		if (rt?.meter.turnEnd()) publish(rt, ctx.ui);
 	});
 
 	pi.on("agent_end", (_event, ctx) => {
+		// The run may continue with a retry or a queued prompt; only the request in flight ends here.
 		const rt = runtime;
-		if (!rt) return;
-		const dropped = rt.meter.reset();
-		stopLive(rt);
-		if (dropped) publish(rt, ctx.ui);
+		if (rt?.meter.reset()) publish(rt, ctx.ui);
 	});
 
 	pi.on("before_provider_request", (_event, ctx) => {
@@ -205,8 +233,6 @@ export default function (pi: ExtensionAPI): void {
 		});
 		if (!started) return;
 		rt.liveThresholds = resolveThresholds(rt.config, provider, id);
-		rt.tickUi = ctx.ui;
-		rt.ticker.start();
 		publish(rt, ctx.ui);
 	});
 
@@ -215,7 +241,16 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.on("message_start", (event) => {
-		if (event.message.role === "assistant") runtime?.meter.messageStart();
+		const rt = runtime;
+		const message = event.message;
+		if (!rt || message.role !== "assistant" || !rt.meter.active) return;
+		// The message names the model that serves the request; behind a virtual model it differs from ctx.model.
+		rt.meter.messageStart({
+			provider: message.provider,
+			model: message.model,
+			ratio: rt.calibration.ratio(calibrationKey(message.provider, message.model)),
+		});
+		rt.liveThresholds = resolveThresholds(rt.config, message.provider, message.model);
 	});
 
 	pi.on("message_update", (event) => {
@@ -231,11 +266,9 @@ export default function (pi: ExtensionAPI): void {
 		if (!rt || message.role !== "assistant") return;
 		const outcome = rt.meter.end(message);
 		if (outcome.kind === "ignored") return;
-		stopLive(rt);
 		if (outcome.kind === "recorded") {
 			const { record } = outcome;
-			rt.records.push(record);
-			if (rt.config.persist) pi.appendEntry(TELEMETRY_CUSTOM_TYPE, record);
+			rt.run.add(record);
 			pi.events.emit(TELEMETRY_CHANNEL, record);
 			if (outcome.calibration) {
 				for (const key of calibrationKeys(record.provider, record.model, record.responseModel)) {
