@@ -7,3 +7,13 @@ allowBuilds:
   "@google/genai": false
   esbuild: false
   protobufjs: false
+
+# Native release management (docs/releases.md): agent-authored change intents in
+# .changeset/, local `pnpm version -r` preparation, committed per-package
+# CHANGELOG.md files, and the consumption ledger .changeset/ledger.yaml.
+# Plugins version independently; the private workspace root never releases.
+versioning:
+  ignore:
+    - pi-extensions
+  changelog:
+    storage: repository

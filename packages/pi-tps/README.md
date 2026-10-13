@@ -4,9 +4,12 @@ Generation-speed readout for Pi's footer. pi-tps measures every assistant reques
 
 ## Install
 
+Releases are published to npm as `@zeroclover/pi-tps`, versioned independently of the other packages in this repository. Each release is tagged `@zeroclover/pi-tps@<version>` and its notes are the matching section of the package's `CHANGELOG.md`.
+
 ```bash
-pi -e ./packages/pi-tps                       # try for one session
-pi install /absolute/path/to/packages/pi-tps  # install for the user
+pi install npm:@zeroclover/pi-tps             # install a published version for the user
+pi -e ./packages/pi-tps                       # try a repository checkout for one session
+pi install /absolute/path/to/packages/pi-tps  # install a repository checkout for the user
 ```
 
 ## Provides

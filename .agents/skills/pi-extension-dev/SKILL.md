@@ -15,7 +15,10 @@ This repository's rules are in `AGENTS.md` and `docs/` at the repository root. T
 4. For every Pi API you will touch, read the relevant section of `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` (or the doc named in `docs/pi-reference.md`) and open the closest example under `examples/extensions/`. Confirm signatures in `dist/index.d.ts` when the doc is not explicit.
 5. Implement with `src/index.ts` as thin wiring and logic in separate modules with tests.
 6. Verify as described in `docs/workflow.md` "Verify": `pnpm check`, the RPC load smoke test, and a live check for anything that needs a session. Restart Pi after editing `src/`; a running session keeps the old code.
-7. Update the package README and the root README table, archive the OpenSpec change, then commit with the package name as scope.
+7. Record the release decision for every plugin whose published content changed, following `docs/releases.md`: `pnpm change --bump <patch|minor|major> --summary "<user-facing change>" @zeroclover/<name>`, or `--bump none` with the reason no release is needed. Use the full `@zeroclover/<name>` here; the directory stays `packages/<name>/`.
+8. Update the package README and the root README table, archive the OpenSpec change, then commit with the package directory name as scope.
+
+Do not prepare versions, merge a release preparation, or publish unless that is the explicit request; `docs/releases.md` is the procedure when it is.
 
 ## When something does not typecheck
 

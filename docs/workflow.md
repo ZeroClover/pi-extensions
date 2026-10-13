@@ -23,7 +23,7 @@ A package's `openspec/specs/` is the current description of what that extension 
 
 ## Create a new extension
 
-1. Choose a name: `pi-<topic>`, lowercase, hyphenated. The directory and the package `name` match.
+1. Choose a name: `pi-<topic>`, lowercase, hyphenated. The directory is `packages/pi-<topic>/` and the npm `name` is `@zeroclover/pi-<topic>`; the commit scope is the bare directory name.
 2. Create the package from the templates below. Replace `<name>` and the placeholder text.
 3. Initialize the package's OpenSpec root and set its context:
 
@@ -48,18 +48,32 @@ A package's `openspec/specs/` is the current description of what that extension 
 5. Propose the first change from `packages/<name>/` (see above), then implement it in `src/`, following `docs/conventions.md`. Consult Pi's docs and the closest shipped example (`docs/pi-reference.md`) before using an API.
 6. Verify (next section).
 7. Write the package `README.md` and add a row to the table in the root `README.md`.
-8. Archive the change, then commit: `feat(pi-<name>): <summary>`.
+8. Record the release decision (`docs/releases.md`): `pnpm change --bump minor --summary "First release: <what it does>" @zeroclover/pi-<name>` when it should ship, or `--bump none` with the reason it should not yet. Its first release keeps the manifest's `0.1.0`.
+9. Archive the change, then commit: `feat(pi-<name>): <summary>`.
 
 ### `packages/<name>/package.json`
 
 ```json
 {
-	"name": "pi-<name>",
+	"name": "@zeroclover/pi-<name>",
 	"version": "0.1.0",
 	"description": "<one sentence>",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZeroClover/pi-extensions.git",
+		"directory": "packages/pi-<name>"
+	},
+	"homepage": "https://github.com/ZeroClover/pi-extensions/tree/master/packages/pi-<name>#readme",
+	"bugs": {
+		"url": "https://github.com/ZeroClover/pi-extensions/issues"
+	},
 	"type": "module",
 	"keywords": ["pi-package", "pi-extension"],
-	"files": ["src", "README.md"],
+	"files": ["src", "README.md", "CHANGELOG.md"],
+	"publishConfig": {
+		"access": "public"
+	},
 	"pi": {
 		"extensions": ["./src/index.ts"]
 	},
@@ -69,7 +83,7 @@ A package's `openspec/specs/` is the current description of what that extension 
 }
 ```
 
-Add `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, or `typebox` to `peerDependencies` as the code imports them. Biome formats `package.json`; run `pnpm lint:fix` after editing it.
+`files` lists plain paths only and always includes `CHANGELOG.md`, which `pnpm version -r` creates at the first release preparation. Declare `pi` resources as plain paths (files or directories) inside `files`, never globs or `!` exclusions, so release checks can verify them. Do not add `private`. Add `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, or `typebox` to `peerDependencies` as the code imports them. Biome formats `package.json`; run `pnpm lint:fix` after editing it.
 
 ### `packages/<name>/src/index.ts`
 
@@ -132,8 +146,11 @@ describe("greeting", () => {
 
 ## Install
 
-pi -e ./packages/<name>                       # try for one session
-pi install /absolute/path/to/packages/<name>  # install for the user
+Releases are published to npm as `@zeroclover/pi-<name>`; each release is tagged `@zeroclover/pi-<name>@<version>`.
+
+pi install npm:@zeroclover/pi-<name>          # install a published version
+pi -e ./packages/<name>                       # try a repository checkout for one session
+pi install /absolute/path/to/packages/<name>  # install a repository checkout for the user
 
 ## Provides
 
@@ -160,6 +177,7 @@ Every change ends with all of these, run from the repository root:
 
    Exit code 0 and the package's commands in the response mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
 3. For behavior that needs a live session (tools the model calls, UI, events), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
+4. Release-impact gate, as CI runs it on pull requests, once the change is committed on a branch: `node tools/release/src/cli.ts coverage --base master --head HEAD`. It fails when a plugin's published content changed without a release decision (`docs/releases.md`).
 
 A running Pi session keeps the extension code it loaded at startup. After editing `src/`, restart Pi (or `/reload`) before testing again.
 
@@ -169,11 +187,16 @@ A running Pi session keeps the extension code it loaded at startup. After editin
 2. For non-trivial changes, propose from `packages/<name>/` and wait for review.
 3. Make the change with its test. Keep the package's public surface (tool names, command names, settings) stable unless the change is the point.
 4. Update the README when tools, commands, flags, or configuration change.
-5. Verify, archive the change, then commit as `fix(pi-<name>): ...` or `feat(pi-<name>): ...`.
+5. Record the release decision with `pnpm change` (`docs/releases.md`): the bump the user-facing change warrants, or `none` with a reason.
+6. Verify, archive the change, then commit as `fix(pi-<name>): ...` or `feat(pi-<name>): ...`.
 
 ## Remove an extension
 
-Delete `packages/<name>/` (its OpenSpec root goes with it), remove its row from the root README, run `pnpm install` to update the lockfile, and commit as `chore(repo): remove pi-<name>`.
+Delete `packages/<name>/` (its OpenSpec root goes with it), remove its row from the root README, run `pnpm install` to update the lockfile, and commit as `chore(repo): remove pi-<name>`. Versions already on npm stay there; never unpublish them.
+
+## Release
+
+Releasing is a separate step taken only on an explicit request: prepare versions locally, review, open a release-focused pull request, and let CI publish after the merge. The procedure, including recovery, is `docs/releases.md`.
 
 ## Upgrade Pi
 
