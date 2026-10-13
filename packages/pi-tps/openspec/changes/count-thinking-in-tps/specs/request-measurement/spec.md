@@ -18,7 +18,7 @@ TTFT SHALL be the duration from the request start to the first `message_update` 
 - **THEN** TTFT is 0.9 s
 
 ### Requirement: Thinking and output are measured separately
-Thinking SHALL be measured as phases delimited by the provider's events: a phase opens at `thinking_start` (or at the first non-empty `thinking_delta` when no start event preceded it) and closes at `thinking_end` (or at the first following non-thinking event, or at the end of the request). The thinking time of a request SHALL be the summed wall time of its phases, silence included. Output deltas (text and tool-call) SHALL be accumulated into their own token estimate and active span as before. A request SHALL record whether its thinking was `none`, `hidden` (a phase without non-empty deltas) or `streamed`.
+Thinking SHALL be measured as phases delimited by the provider's events: a phase opens at `thinking_start` (or at the first non-empty `thinking_delta` when no start event preceded it) and closes at `thinking_end` (or at the first following non-thinking event, or at the end of the request). The thinking time of a request SHALL be the summed wall time of its phases, silence included; thinking before the earliest exposed boundary is TTFT and SHALL NOT be guessed. Output deltas (text and tool-call) SHALL be accumulated into their own token estimate and active span as before. A request SHALL record whether its thinking was `none`, `hidden` (a phase without non-empty deltas) or `streamed`.
 
 #### Scenario: Mixed thinking and output
 - **WHEN** a request streams 4 s of thinking followed by 2 s of text
@@ -31,6 +31,10 @@ Thinking SHALL be measured as phases delimited by the provider's events: a phase
 #### Scenario: Hidden reasoning
 - **WHEN** `thinking_start` arrives at 0.5 s and `thinking_end` at 8.0 s with no thinking delta in between
 - **THEN** thinking time is 7.5 s and the thinking is `hidden`
+
+#### Scenario: Start synthesised from the first chunk
+- **WHEN** `thinking_start` and the first summary chunk arrive together at 6.0 s, further chunks follow, and the phase closes at 12.0 s
+- **THEN** thinking time is 6.0 s, TTFT is 6.0 s, and the record carries no marker for the unobserved thinking before 6.0 s
 
 #### Scenario: Several thinking phases
 - **WHEN** a request streams thinking for 3 s, a tool call, thinking for 2 s and text
@@ -95,11 +99,11 @@ A gap of 500 ms or more between two consecutive output deltas of the same reques
 - **THEN** no stall is recorded and the 4 s are thinking time
 
 ### Requirement: Settlement from provider usage
-At `message_end`, when `usage.output` is a finite positive number, the settled TPS SHALL be `usage.output / generation time`, where generation time is the thinking time plus the active output span. Thinking tokens SHALL be `usage.reasoning` when it is positive and the calibrated thinking estimate when the thinking was streamed and `usage.reasoning` is absent or 0. When `usage.output` is unavailable, the settled TPS SHALL fall back to the calibrated estimates over the same time and be marked estimated. A request whose generation time is shorter than 1 s SHALL have no settled TPS.
+At `message_end`, when `usage.output` is a finite positive number, the settled TPS SHALL be the request's generated tokens over its generation time (thinking time plus active output span). Generated tokens SHALL be `usage.output` when a thinking phase was observed, else `usage.output` minus the reported reasoning tokens; the record SHALL carry them. Thinking tokens SHALL be `usage.reasoning` when positive, else the calibrated thinking estimate when thinking was streamed. Without `usage.output` the figures SHALL use the calibrated estimates and be marked estimated. A generation time under 1 s SHALL yield no settled TPS.
 
 #### Scenario: Provider reports reasoning tokens
 - **WHEN** usage reports output 1200 and reasoning 400, the thinking time is 5 s and the active output span is 10 s
-- **THEN** settled TPS is 80, thinking tokens are 400 and visible output is 800
+- **THEN** settled TPS is 80, generated tokens are 1200, thinking tokens are 400 and visible output is 800
 
 #### Scenario: Provider reports no reasoning breakdown
 - **WHEN** usage reports output 1200 and reasoning 0, thinking was streamed and estimated at 350 tokens after calibration, the thinking time is 5 s and the active output span is 10 s
@@ -111,7 +115,7 @@ At `message_end`, when `usage.output` is a finite positive number, the settled T
 
 #### Scenario: Reasoning count without a thinking phase
 - **WHEN** usage reports output 1200 and reasoning 900 and no thinking phase was observed, with an active output span of 3 s
-- **THEN** settled TPS is (1200 − 900) / 3 = 100, thinking tokens are 900 without a duration, and the figure is not marked estimated
+- **THEN** generated tokens are 300, settled TPS is 300 / 3 = 100, thinking tokens are 900 without a duration, the record's output tokens stay 1200, and the figure is not marked estimated
 
 #### Scenario: No thinking
 - **WHEN** usage reports output 600 and reasoning 0, no thinking phase was observed and the active output span is 6 s
@@ -130,7 +134,7 @@ At `message_end`, when `usage.output` is a finite positive number, the settled T
 - **THEN** the request has a settled TPS over 3.4 s and contributes to the run TPS
 
 ### Requirement: Burst detection
-Content deltas less than 1 ms after the previous one SHALL form one arrival batch (one network read). A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 batches for a response of at least 50 streamed tokens (visible output tokens, plus thinking tokens when the thinking was streamed; hidden reasoning tokens are not streamed and do not count); a 100 ms window carrying at least 50 % of its arriving tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the stream (first to last delta) lasts more than 1 s; or a settled generation TPS above 10 000.
+Output deltas (text and tool-call) less than 1 ms after the previous output delta SHALL form one arrival batch (one network read); thinking deltas are a summary or a chain of thought at the provider's cadence and SHALL NOT be burst evidence. A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 output batches for a response of at least 50 visible output tokens; a 100 ms window carrying at least 50 % of the arriving output tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the output stream (first to last output delta) lasts more than 1 s; or a settled generation TPS above 10 000.
 
 #### Scenario: Too few batches
 - **WHEN** a 900-token response arrives as 3 deltas
@@ -154,4 +158,16 @@ Content deltas less than 1 ms after the previous one SHALL form one arrival batc
 
 #### Scenario: Hidden reasoning then a short tool call
 - **WHEN** usage reports output 940 and reasoning 900 after a thinking phase without deltas, and the 40 visible tokens arrived in 3 deltas
-- **THEN** the request is not marked burst, because only 40 tokens were streamed
+- **THEN** the request is not marked burst, because only 40 output tokens arrived
+
+#### Scenario: Chunked summary then a tool call
+- **WHEN** summary chunks of 20 estimated tokens arrive at 2 s, 6 s and 11 s and a 20-token tool call at 12 s, with usage output 1500 and reasoning 1480
+- **THEN** the request is not marked burst, its rate is 1500 over the 10 s thinking phase plus the output span, it contributes to the run TPS and it updates the thinking ratio
+
+#### Scenario: Summary delivered in one piece
+- **WHEN** one summary chunk of 300 estimated tokens arrives at 8 s and 200 visible tokens then stream in 80 deltas over 4 s
+- **THEN** the request is not marked burst
+
+#### Scenario: Buffered chain of thought and answer
+- **WHEN** 2000 tokens of thinking and 400 visible tokens arrive together in 4 deltas 15 s after the request
+- **THEN** the request is marked burst by the batch criterion and reports throughput

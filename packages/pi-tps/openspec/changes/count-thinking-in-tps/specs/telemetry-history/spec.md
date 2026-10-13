@@ -14,7 +14,7 @@ Each run record SHALL carry a `version` field; the current version is 2. Entries
 - **THEN** the idle readout shows the empty state until the first run settles
 
 ### Requirement: Run TPS
-The run TPS SHALL be the sum of reported output tokens (thinking included) divided by the sum of generation times (thinking time plus active output span) over the run's settled, non-burst requests whose own generation time is at least 1 s, marked estimated when a contributing request relied on the estimate; when no settled request qualifies, aborted ones that qualify SHALL be used. When every request was a burst, the run SHALL report the burst throughput (summed output tokens over summed elapsed times) instead; otherwise it has no TPS.
+The run TPS SHALL be the sum of generated tokens (as each request record defines them: reported output including thinking when a thinking phase was observed, else output minus reported reasoning) divided by the sum of generation times (thinking time plus active output span) over the run's settled, non-burst requests whose own generation time is at least 1 s, marked estimated when a contributing request relied on the estimate; when no settled request qualifies, aborted ones that qualify SHALL be used. When every request was a burst, the run SHALL report the burst throughput (summed output tokens over summed elapsed times) instead; otherwise it has no TPS.
 
 #### Scenario: Aggregate generation rate
 - **WHEN** a run holds requests with 1000 output tokens over 10 s, 300 over 2 s, and a tool call with 80 over 0.2 s
@@ -23,6 +23,10 @@ The run TPS SHALL be the sum of reported output tokens (thinking included) divid
 #### Scenario: Thinking counts
 - **WHEN** a run holds a request with 400 reasoning tokens over 5 s of thinking and 800 visible tokens over 10 s of output, and a tool call with 300 reasoning tokens over 3 s of thinking and 60 visible tokens over 0.4 s of output
 - **THEN** the run TPS is (1200 + 360) / (15 + 3.4) ≈ 84.8 and both requests contribute
+
+#### Scenario: Reasoning count without a phase
+- **WHEN** a run holds a request with output 1200 and reasoning 900, no thinking phase and 3 s of output, and a request with output 1200 and reasoning 400 over 5 s of thinking and 10 s of output
+- **THEN** the run TPS is (300 + 1200) / (3 + 15) ≈ 83.3, the same figure the session shows when it holds only this run, and the run's output tokens are 2400 − 1300 = 1100 visible with 1300 thinking
 
 #### Scenario: Span just under one second
 - **WHEN** a request's generation time is 999.6 ms and the record is persisted and read back
@@ -55,5 +59,5 @@ The run TTFT SHALL be the mean over its non-aborted requests that have one, or o
 Session aggregates SHALL apply the run formulas to all request records of all runs on the current branch, and SHALL also count the runs.
 
 #### Scenario: Mixed runs
-- **WHEN** the branch holds a run whose requests total 600 output tokens over 10 s of generation time and a run with 900 tokens over 10 s
+- **WHEN** the branch holds a run whose requests total 600 generated tokens over 10 s of generation time and a run with 900 over 10 s
 - **THEN** the session TPS is 75 and the run count is 2
