@@ -260,4 +260,4 @@ In `rpc`, `json` and `print` modes pi-tps measures, persists and broadcasts, but
 
 ## License
 
-[AGPL-3.0-only](../../LICENSE)
+[AGPL-3.0-only](https://github.com/ZeroClover/pi-extensions/blob/master/LICENSE)
