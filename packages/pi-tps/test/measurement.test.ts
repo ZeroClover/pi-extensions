@@ -810,9 +810,9 @@ describe("aborted, errored and deferred requests", () => {
 			burst: false,
 			outputTokens: 230,
 			outputTps: 51.11,
-			tps: 51.11,
 			elapsedMs: 5500,
 		});
+		expect(outcome.record.tps).toBeCloseTo(230 / 4.5);
 		expect(outcome.calibration).toEqual({});
 	});
 

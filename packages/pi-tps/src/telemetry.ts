@@ -45,14 +45,20 @@ export interface RequestRecord {
 	elapsedMs: number;
 	/** Active output span: gaps between consecutive output deltas, stalls excluded. */
 	outputMs: number;
-	/** Generation time: the thinking time plus the active output span. */
+	/**
+	 * Generation time: the thinking time plus the active output span, unrounded because it is the denominator of
+	 * `tps` and of the run and session rates.
+	 */
 	generationMs: number;
 	/**
 	 * Tokens the generation rate counts: all output tokens (thinking included) when a thinking phase was observed,
 	 * else the output tokens without the reported reasoning tokens.
 	 */
 	generatedTokens: number;
-	/** Generation rate: generated tokens over the generation time. Absent for bursts and generation times under 1 s. */
+	/**
+	 * Generation rate: generated tokens over the generation time, unrounded so that it equals the rate of a run or
+	 * session made of this request alone. Absent for bursts and generation times under 1 s.
+	 */
 	tps?: number;
 	/** Visible output tokens over the active output span. Absent for bursts and spans under 1 s. */
 	outputTps?: number;

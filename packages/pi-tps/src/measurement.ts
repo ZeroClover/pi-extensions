@@ -550,9 +550,11 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		outcome,
 		burst: burstReason !== undefined,
 		elapsedMs: round(elapsedMs, 0),
-		// Rounded down so that a time below the 1 s threshold stays below it after persistence.
+		// Rounded down so that a span below 1 s stays below it in the record.
 		outputMs: Math.floor(request.outputSpanMs),
-		generationMs: Math.floor(generationMs),
+		// Unrounded, like `tps`: the aggregates divide by it, so a request, its run and a one-run session must see the
+		// same numbers to show the same rate.
+		generationMs,
 		generatedTokens,
 		thinking: request.thinking,
 		estimated: reportedOutput === undefined,
@@ -571,7 +573,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	if (request.firstAt !== undefined) record.ttftMs = round(request.firstAt - request.startAt, 0);
 	if (request.firstOutputAt !== undefined) record.ttftTextMs = round(request.firstOutputAt - request.startAt, 0);
 	if (request.headersAt !== undefined) record.headersMs = round(request.headersAt - request.startAt, 0);
-	if (tps !== undefined) record.tps = round(tps, 2);
+	if (tps !== undefined) record.tps = tps;
 	if (outputTps !== undefined) record.outputTps = round(outputTps, 2);
 	if (thinkingTps !== undefined) record.thinkingTps = round(thinkingTps, 2);
 	if (throughputTps !== undefined) record.throughputTps = round(throughputTps, 2);

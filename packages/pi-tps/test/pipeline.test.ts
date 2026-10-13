@@ -5,7 +5,7 @@ import { CALIBRATION_KINDS, CalibrationStore } from "../src/calibration.ts";
 import type { Clock } from "../src/clock.ts";
 import { createDeltaEstimator } from "../src/estimator.ts";
 import type { FileLayer } from "../src/files.ts";
-import { formatSnapshot, plainText } from "../src/format.ts";
+import { formatSnapshot, formatTps, plainText } from "../src/format.ts";
 import { type AssistantEventLike, type EndInput, Measurement, phaseEvent } from "../src/measurement.ts";
 import { RunTracker } from "../src/run.ts";
 import { parseRunRecord, type RequestRecord, type RunRecord } from "../src/telemetry.ts";
@@ -66,6 +66,53 @@ describe("request settlement and run aggregation agree after persistence (span j
 		const request: RequestRecord | undefined = run.requests[0];
 		expect(request?.tps !== undefined).toBe(contributes);
 		expect(summarizeRun(run).tps !== undefined).toBe(contributes);
+	});
+});
+
+describe("a request, its run and a one-run session show the same rate (non-integer generation time)", () => {
+	/** A hidden thinking phase from 0 to `thinkingEndAt`, then one 10-token tool-call delta; output 100, reasoning 90. */
+	function hiddenThenToolCall(thinkingEndAt: number, toolCallAt: number) {
+		const clock = new FakeClock();
+		const meter = new Measurement(clock, () => ({ add: (_stream, delta) => delta.length }));
+		const tracker = new RunTracker(clock);
+		tracker.start(1);
+		meter.turnStart();
+		meter.requestStart({ provider: "p", model: "m", ratios: {}, wallTime: 1 });
+		meter.messageStart();
+		meter.event({ type: "thinking_start" });
+		clock.t = thinkingEndAt;
+		meter.event({ type: "thinking_end" });
+		clock.t = toolCallAt;
+		meter.event({ type: "delta", stream: "toolcall", text: "x".repeat(10) });
+		const outcome = meter.end({
+			stopReason: "toolUse",
+			provider: "p",
+			model: "m",
+			usage: { input: 10, output: 100, reasoning: 90, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+		});
+		if (outcome.kind !== "recorded") throw new Error(`expected a record, got ${outcome.kind}`);
+		tracker.add(outcome.record);
+		const run = parseRunRecord(JSON.parse(JSON.stringify(tracker.settle(false))));
+		if (!run) throw new Error("the run record did not survive the round trip");
+		const session = summarizeSession([run]);
+		return { request: outcome.record.tps, run: summarizeRun(run).tps, session: session?.tps };
+	}
+
+	it.each([
+		// 100 tokens over 1000.9 ms: 99.91 tok/s, which rounding the time down to 1000 ms would show as 100.0.
+		[1000.9, 1001],
+		// 100 tokens over 1000.5043 ms: 99.9496 tok/s, which rounding the rate to two decimals would show as 100.0.
+		[1000.5043, 1000.5043],
+	])("thinking until %f ms, tool call at %f ms", (thinkingEndAt, toolCallAt) => {
+		const rates = hiddenThenToolCall(thinkingEndAt, toolCallAt);
+		expect(rates.request).toBeDefined();
+		expect(rates.run).toBe(rates.request);
+		expect(rates.session).toBe(rates.request);
+		expect(formatTps(rates.run ?? 0)).toBe("99.9");
+	});
+
+	it("keeps a generation time just under one second out after persistence", () => {
+		expect(hiddenThenToolCall(999.6, 999.6)).toEqual({ request: undefined, run: undefined, session: undefined });
 	});
 });
 
@@ -316,7 +363,8 @@ describe("thinking models end to end", () => {
 				reasoning: 400,
 			},
 		]);
-		expect(result.records[0]).toMatchObject({ thinking: "none", generatedTokens: 310, tps: 103.33 });
+		expect(result.records[0]).toMatchObject({ thinking: "none", generatedTokens: 310 });
+		expect(result.records[0]?.tps).toBeCloseTo(310 / 3);
 		expect(result.run.tps).toBeCloseTo(1510 / 18);
 		expect(result.session.tps).toBe(result.run.tps);
 		expect(result.summary).toBe("TPS 83.9 tok/s · TTFT 0.3s · 18.7s · in 20 · out 1.1K · think 1.3K 5.0s · req 2");
