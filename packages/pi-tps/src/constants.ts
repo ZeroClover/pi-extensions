@@ -1,13 +1,13 @@
-/** A gap of at least this length between two content deltas is a stall (excluded from active spans). */
+/** A gap of at least this length between two consecutive output deltas is a stall (excluded from the output span). */
 export const STALL_GAP_MS = 500;
 
-/** Live output TPS is computed over this trailing window. */
+/** Live TPS is computed over this trailing window. */
 export const LIVE_WINDOW_MS = 5000;
 
-/** Live output TPS stays unavailable until this much time has passed since the first output delta. */
-export const LIVE_WARMUP_MS = 1500;
+/** Live TPS stays unavailable until the window holds this much counted generation time. */
+export const LIVE_MIN_COUNTED_MS = 1500;
 
-/** A settled TPS needs at least this much active span; shorter spans are too noisy to report. */
+/** A settled TPS needs at least this much generation time; shorter spans are too noisy to report. */
 export const MIN_SETTLED_SPAN_MS = 1000;
 
 /** Deltas closer than this to their predecessor arrived in the same network read and form one batch. */
@@ -37,8 +37,11 @@ export const CALIBRATION_ALPHA = 0.3;
 /** Lower clamp of the calibration ratio. */
 export const CALIBRATION_MIN_RATIO = 0.25;
 
-/** Upper clamp of the calibration ratio. */
-export const CALIBRATION_MAX_RATIO = 4;
+/** Upper clamp of the output calibration ratio. */
+export const CALIBRATION_MAX_OUTPUT_RATIO = 4;
+
+/** Upper clamp of the thinking calibration ratio: a summary is up to two orders of magnitude shorter than its reasoning. */
+export const CALIBRATION_MAX_THINKING_RATIO = 100;
 
 /** Requests whose raw estimate is not above this are too small to calibrate from. */
 export const CALIBRATION_MIN_ESTIMATE = 50;

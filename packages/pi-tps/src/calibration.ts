@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import {
 	CALIBRATION_ALPHA,
-	CALIBRATION_MAX_RATIO,
+	CALIBRATION_MAX_OUTPUT_RATIO,
+	CALIBRATION_MAX_THINKING_RATIO,
 	CALIBRATION_MIN_ESTIMATE,
 	CALIBRATION_MIN_RATIO,
 } from "./constants.ts";
@@ -11,14 +12,34 @@ import { errorMessage, type FileLayer } from "./files.ts";
 /** Directory of the calibration versions inside Pi's agent directory. */
 export const CALIBRATION_DIR_NAME = "pi-tps-calibration";
 
-export interface CalibrationEntry {
+/**
+ * The token kinds calibrated separately: visible output (text and tool calls) and thinking. The output ratio is near 1
+ * for every model, the thinking ratio only for models that stream their full chain of thought.
+ */
+export type CalibrationKind = "output" | "thinking";
+
+export const CALIBRATION_KINDS: readonly CalibrationKind[] = ["output", "thinking"];
+
+export interface RatioEntry {
 	ratio: number;
 	samples: number;
 	/** Wall-clock milliseconds of the last update. */
 	updatedAt: number;
 }
 
-/** One request's reported output tokens and the raw estimate for the same tokens. */
+/** The ratios of one model; each kind is present once a sample of that kind was applied. */
+export interface CalibrationEntry {
+	output?: RatioEntry;
+	thinking?: RatioEntry;
+}
+
+/** The factors a live estimate of a model is multiplied by; absent when that kind is not calibrated yet. */
+export interface CalibrationRatios {
+	output?: number | undefined;
+	thinking?: number | undefined;
+}
+
+/** One request's reported tokens of one kind and the raw estimate for the same tokens. */
 export interface CalibrationSample {
 	reported: number;
 	estimated: number;
@@ -30,8 +51,10 @@ export interface WriterRecord {
 	at: number;
 }
 
+const FILE_VERSION = 2;
+
 interface CalibrationFile {
-	version: 1;
+	version: typeof FILE_VERSION;
 	models: Record<string, CalibrationEntry>;
 	writers: Record<string, WriterRecord>;
 }
@@ -50,8 +73,9 @@ export function calibrationKeys(provider: string, model: string, responseModel?:
 	return keys;
 }
 
-export function clampRatio(ratio: number): number {
-	return Math.min(CALIBRATION_MAX_RATIO, Math.max(CALIBRATION_MIN_RATIO, ratio));
+export function clampRatio(kind: CalibrationKind, ratio: number): number {
+	const max = kind === "output" ? CALIBRATION_MAX_OUTPUT_RATIO : CALIBRATION_MAX_THINKING_RATIO;
+	return Math.min(max, Math.max(CALIBRATION_MIN_RATIO, ratio));
 }
 
 /** Tiny responses carry too much rounding noise to learn from. */
@@ -65,36 +89,58 @@ export function isCalibratable(sample: CalibrationSample): boolean {
 }
 
 /** Exponential moving average of `reported / estimated`; the first sample sets the ratio directly. */
+export function nextRatio(
+	kind: CalibrationKind,
+	previous: RatioEntry | undefined,
+	sample: CalibrationSample,
+	now: number,
+): RatioEntry {
+	const observed = clampRatio(kind, sample.reported / sample.estimated);
+	if (!previous) return { ratio: observed, samples: 1, updatedAt: now };
+	const ratio = clampRatio(kind, previous.ratio + CALIBRATION_ALPHA * (observed - previous.ratio));
+	return { ratio, samples: previous.samples + 1, updatedAt: now };
+}
+
+/** The model entry after one sample of one kind; the other kind is unchanged. */
 export function nextEntry(
 	previous: CalibrationEntry | undefined,
+	kind: CalibrationKind,
 	sample: CalibrationSample,
 	now: number,
 ): CalibrationEntry {
-	const observed = clampRatio(sample.reported / sample.estimated);
-	if (!previous) return { ratio: observed, samples: 1, updatedAt: now };
-	const ratio = clampRatio(previous.ratio + CALIBRATION_ALPHA * (observed - previous.ratio));
-	return { ratio, samples: previous.samples + 1, updatedAt: now };
+	const entry: CalibrationEntry = { ...previous };
+	entry[kind] = nextRatio(kind, previous?.[kind], sample, now);
+	return entry;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseEntry(value: unknown): CalibrationEntry | undefined {
+function parseRatio(kind: CalibrationKind, value: unknown): RatioEntry | undefined {
 	if (!isRecord(value)) return undefined;
 	const { ratio, samples, updatedAt } = value;
 	if (typeof ratio !== "number" || !Number.isFinite(ratio)) return undefined;
 	if (typeof samples !== "number" || !Number.isInteger(samples) || samples < 1) return undefined;
 	if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) return undefined;
-	return { ratio: clampRatio(ratio), samples, updatedAt };
+	return { ratio: clampRatio(kind, ratio), samples, updatedAt };
 }
 
-const UNSUPPORTED_FORMAT = "unsupported format, expected { version: 1, models: {...} }";
+/** A model entry with at least one valid ratio and no invalid one. */
+function parseEntry(value: unknown): CalibrationEntry | undefined {
+	if (!isRecord(value)) return undefined;
+	const entry: CalibrationEntry = {};
+	for (const kind of CALIBRATION_KINDS) {
+		if (value[kind] === undefined) continue;
+		const ratio = parseRatio(kind, value[kind]);
+		if (!ratio) return undefined;
+		entry[kind] = ratio;
+	}
+	return entry.output || entry.thinking ? entry : undefined;
+}
 
-/**
- * Parses one calibration version. `usable` is false when the content cannot be used at all; individual invalid
- * entries are skipped with a warning.
- */
+const UNSUPPORTED_FORMAT = `unsupported format, expected { version: ${FILE_VERSION}, models: {...} }`;
+
 function parseWriter(value: unknown): WriterRecord | undefined {
 	if (!isRecord(value)) return undefined;
 	const { seq, at } = value;
@@ -103,23 +149,34 @@ function parseWriter(value: unknown): WriterRecord | undefined {
 	return { seq, at };
 }
 
-export function parseCalibration(text: string): {
-	models: Map<string, CalibrationEntry>;
-	writers: Map<string, WriterRecord>;
-	usable: boolean;
-	warning?: string;
-} {
+/**
+ * One parsed calibration version: `current` with its models (individual invalid entries skipped with a warning),
+ * `other-format` for a file of another format version, or `invalid` when the content cannot be used at all.
+ */
+export type ParsedCalibration =
+	| {
+			status: "current";
+			models: Map<string, CalibrationEntry>;
+			writers: Map<string, WriterRecord>;
+			warning?: string;
+	  }
+	| { status: "other-format" }
+	| { status: "invalid"; warning: string };
+
+export function parseCalibration(text: string): ParsedCalibration {
 	const models = new Map<string, CalibrationEntry>();
 	const writers = new Map<string, WriterRecord>();
 	let json: unknown;
 	try {
 		json = JSON.parse(text);
 	} catch (error) {
-		return { models, writers, usable: false, warning: `invalid JSON (${errorMessage(error)})` };
+		return { status: "invalid", warning: `invalid JSON (${errorMessage(error)})` };
 	}
-	if (!isRecord(json)) return { models, writers, usable: false, warning: UNSUPPORTED_FORMAT };
+	if (!isRecord(json)) return { status: "invalid", warning: UNSUPPORTED_FORMAT };
 	const { version, models: entries, writers: records } = json;
-	if (version !== 1 || !isRecord(entries)) return { models, writers, usable: false, warning: UNSUPPORTED_FORMAT };
+	// Files of an older (or newer) format are not migrated: calibration starts over.
+	if (typeof version === "number" && version !== FILE_VERSION) return { status: "other-format" };
+	if (version !== FILE_VERSION || !isRecord(entries)) return { status: "invalid", warning: UNSUPPORTED_FORMAT };
 	if (isRecord(records)) {
 		for (const [id, value] of Object.entries(records)) {
 			const record = parseWriter(value);
@@ -132,11 +189,11 @@ export function parseCalibration(text: string): {
 		if (entry) models.set(key, entry);
 		else skipped++;
 	}
-	if (skipped === 0) return { models, writers, usable: true };
+	if (skipped === 0) return { status: "current", models, writers };
 	return {
+		status: "current",
 		models,
 		writers,
-		usable: true,
 		warning: `skipped ${skipped} invalid entr${skipped === 1 ? "y" : "ies"}`,
 	};
 }
@@ -163,6 +220,7 @@ interface PendingSample {
 	/** Position in this session's sample order, from 1. */
 	seq: number;
 	key: string;
+	kind: CalibrationKind;
 	sample: CalibrationSample;
 	at: number;
 }
@@ -177,7 +235,7 @@ interface Snapshot {
 
 function replay(base: ReadonlyMap<string, CalibrationEntry>, samples: readonly PendingSample[]) {
 	const models = new Map(base);
-	for (const { key, sample, at } of samples) models.set(key, nextEntry(models.get(key), sample, at));
+	for (const { key, kind, sample, at } of samples) models.set(key, nextEntry(models.get(key), kind, sample, at));
 	return models;
 }
 
@@ -226,18 +284,19 @@ export class CalibrationStore {
 		return snapshot.warning === undefined ? undefined : `pi-tps: ${snapshot.warning}`;
 	}
 
-	ratio(key: string): number | undefined {
-		return this.models.get(key)?.ratio;
+	ratios(key: string): CalibrationRatios {
+		const entry = this.models.get(key);
+		return { output: entry?.output?.ratio, thinking: entry?.thinking?.ratio };
 	}
 
 	entry(key: string): CalibrationEntry | undefined {
 		return this.models.get(key);
 	}
 
-	/** Applies one sample and publishes it. Returns a warning the first time writing fails. */
-	update(key: string, sample: CalibrationSample, now: number): string | undefined {
+	/** Applies one sample of one kind and publishes it. Returns a warning the first time writing fails. */
+	update(key: string, kind: CalibrationKind, sample: CalibrationSample, now: number): string | undefined {
 		if (!isCalibratable(sample)) return undefined;
-		this.pending.push({ seq: this.nextSeq++, key, sample, at: now });
+		this.pending.push({ seq: this.nextSeq++, key, kind, sample, at: now });
 		this.models = replay(this.published, this.pending);
 		return this.flush();
 	}
@@ -336,7 +395,7 @@ export class CalibrationStore {
 		notePossibleCreation: () => void,
 	): boolean {
 		const file: CalibrationFile = {
-			version: 1,
+			version: FILE_VERSION,
 			models: Object.fromEntries(models),
 			writers: Object.fromEntries(writers),
 		};
@@ -368,7 +427,10 @@ export class CalibrationStore {
 			.sort((a, b) => b - a);
 	}
 
-	/** The newest usable version; unusable newer files are reported and skipped. */
+	/**
+	 * The newest usable version; invalid newer files are reported and skipped. A version in another file format ends
+	 * the search: the calibration starts empty and the next publish goes past it.
+	 */
 	private readNewest(): Snapshot {
 		const versions = this.versions();
 		const highest = versions[0] ?? 0;
@@ -379,8 +441,9 @@ export class CalibrationStore {
 			// Removed by another session between listing and reading; an older version follows.
 			if (text === undefined) continue;
 			const parsed = parseCalibration(text);
+			if (parsed.status === "other-format") break;
 			if (parsed.warning !== undefined) warning ??= `${this.path(version)}: ${parsed.warning}`;
-			if (!parsed.usable) continue;
+			if (parsed.status === "invalid") continue;
 			snapshot = { version: highest, models: parsed.models, writers: parsed.writers };
 			break;
 		}

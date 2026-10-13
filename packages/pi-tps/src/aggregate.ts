@@ -32,23 +32,33 @@ export function visibleOutput(record: RequestRecord): number {
 	return Math.max(0, record.outputTokens - (record.thinkingTokens ?? 0));
 }
 
-/**
- * Whether a request's output rate describes genuine streaming: settled or aborted, not burst, and with at least 1 s
- * of active output. Shorter spans (typically tool-call requests) are dominated by tokens the provider counts but never
- * streams, such as tool-call framing, and would inflate the aggregate.
- */
-function hasRate(record: RequestRecord): boolean {
-	return !record.burst && record.outputMs >= MIN_SETTLED_SPAN_MS;
+/** Whether the request's thinking tokens are the calibrated estimate of streamed thinking rather than usage. */
+export function thinkingEstimated(record: RequestRecord): boolean {
+	return record.thinking === "streamed" && record.thinkingTokens !== undefined && !((record.reasoningTokens ?? 0) > 0);
 }
 
-/** Summed visible output over summed active output span, with whether any of the requests relied on the estimate. */
+/** Whether a token count derived from the record (visible output or thinking) relies on the estimate. */
+export function tokensEstimated(record: RequestRecord): boolean {
+	return record.estimated || thinkingEstimated(record);
+}
+
+/**
+ * Whether a request's generation rate describes genuine streaming: not burst, and with at least 1 s of generation
+ * time. Shorter times (typically tool-call requests without thinking) are dominated by tokens the provider counts but
+ * never streams, such as tool-call framing, and would inflate the aggregate.
+ */
+function hasRate(record: RequestRecord): boolean {
+	return !record.burst && record.generationMs >= MIN_SETTLED_SPAN_MS;
+}
+
+/** Summed generated tokens over summed generation time, with whether any of the requests relied on the estimate. */
 function weightedRate(records: readonly RequestRecord[]): { tps: number; estimated: boolean } | undefined {
 	let tokens = 0;
 	let ms = 0;
 	let estimated = false;
 	for (const record of records) {
-		tokens += visibleOutput(record);
-		ms += record.outputMs;
+		tokens += record.generatedTokens;
+		ms += record.generationMs;
 		if (record.estimated) estimated = true;
 	}
 	return ms > 0 ? { tps: tokens / (ms / 1000), estimated } : undefined;
@@ -61,8 +71,8 @@ function meanTtft(records: readonly RequestRecord[]): number | undefined {
 
 /**
  * Aggregates request records with one method for runs and sessions, so their figures cannot disagree:
- * - TPS: the aggregate generation rate, summed visible output over summed active output span of the non-burst requests
- *   with at least 1 s of active output (the per-request rates weighted by their active duration). Aborted requests
+ * - TPS: the aggregate generation rate, summed generated tokens over summed generation time of the non-burst requests
+ *   with at least 1 s of generation time (the per-request rates weighted by their generation time). Aborted requests
  *   count only when nothing else qualifies, so an aborted run still shows a rate.
  * - Burst throughput: only when every request was a burst, i.e. the whole answer was buffered.
  * - TTFT: mean over non-aborted requests, falling back to aborted ones the same way.
@@ -92,7 +102,7 @@ export function aggregate(records: readonly RequestRecord[]): Aggregate {
 		result.stallMs += record.stallMs;
 		result.stallCount += record.stallCount;
 		if (record.cost !== undefined) result.cost = (result.cost ?? 0) + record.cost;
-		if (record.estimated) result.tokensEstimated = true;
+		if (tokensEstimated(record)) result.tokensEstimated = true;
 	}
 
 	const completed = records.filter((record) => record.outcome === "settled");

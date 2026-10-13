@@ -48,6 +48,16 @@ describe("classifyBurst", () => {
 		expect(classifyBurst(timeline(evenly(300, 3, 2)), 1000, 220)).toBeUndefined();
 	});
 
+	it("judges the output stream by its own token count (chunked summary then a tool call)", () => {
+		// With the summary chunks in the timeline the request reads as burst; the output stream alone does not.
+		expect(classifyBurst(timeline([2000, 6000, 11000, 12000].map((at) => [at, 20])), 80)).toBe("few-batches");
+		expect(classifyBurst(timeline([[12000, 20]]), 20, 150)).toBeUndefined();
+	});
+
+	it("still marks a request without output deltas whose reported output is large (successful request without deltas)", () => {
+		expect(classifyBurst(timeline([]), 120)).toBe("few-batches");
+	});
+
 	it("does not apply the cluster rule to streams of 1 s or less", () => {
 		const entries = [...evenly(5, 100, 1), [450, 100] as [number, number]];
 		expect(classifyBurst(timeline(entries), 1000, 1000)).toBeUndefined();

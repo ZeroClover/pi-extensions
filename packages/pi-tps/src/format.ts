@@ -114,10 +114,13 @@ function output(tokens: number, estimated: boolean): Field {
 	return { text: `out ${figure}`, symbol: `↓${figure}` };
 }
 
-function thinking(tokens: number, ms: number | undefined, estimated: boolean): Field {
+/** Thinking tokens and time; without a count (hidden thinking) the time alone. */
+function thinking(tokens: number | undefined, ms: number | undefined, estimated: boolean): Field {
+	const duration = formatDuration(ms ?? 0);
+	if (tokens === undefined) return { text: `think ${duration}`, symbol: `✻${duration}` };
 	// Below 50 ms the duration would print as 0.0s and say nothing.
-	const duration = ms !== undefined && ms >= 50 ? ` ${formatDuration(ms)}` : "";
-	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}${duration}`;
+	const suffix = ms !== undefined && ms >= 50 ? ` ${duration}` : "";
+	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}${suffix}`;
 	return { text: `think ${figure}`, symbol: `✻${figure}` };
 }
 
@@ -139,12 +142,14 @@ function live(snapshot: LiveSnapshot): Field[] {
 	if (snapshot.phase === "waiting") {
 		fields.push(ttft(snapshot.elapsedMs));
 	} else {
-		fields.push(snapshot.liveTps === undefined ? UNKNOWN_RATE : rate(snapshot.liveTps, !snapshot.calibrated));
-		// Live token counts are always estimates; they are marked until the model is calibrated.
-		const uncalibrated = !snapshot.calibrated;
-		fields.push(ttft(snapshot.ttftMs), output(snapshot.outputTokens, uncalibrated));
-		if (snapshot.thinkingTokens !== undefined) {
-			fields.push(thinking(snapshot.thinkingTokens, snapshot.thinkingMs, uncalibrated));
+		fields.push(snapshot.liveTps === undefined ? UNKNOWN_RATE : rate(snapshot.liveTps, !snapshot.tpsCalibrated));
+		// TTFT keeps counting up while a thinking phase is open and no content has arrived yet.
+		fields.push(ttft(snapshot.ttftMs ?? snapshot.elapsedMs));
+		// Live token counts are always estimates; each is marked until its kind is calibrated for the model. Before
+		// any content arrived (a hidden thinking phase) there is no count to show.
+		if (snapshot.ttftMs !== undefined) fields.push(output(snapshot.outputTokens, !snapshot.calibrated));
+		if (snapshot.thinking !== "none") {
+			fields.push(thinking(snapshot.thinkingTokens, snapshot.thinkingMs, !snapshot.thinkingCalibrated));
 		}
 	}
 	if (snapshot.request > 1) fields.push(count("req", snapshot.request));
@@ -177,6 +182,9 @@ function run(summary: RunSummary): Field[] {
 	fields.push(output(summary.visibleOutputTokens, summary.tokensEstimated));
 	if (summary.thinkingTokens > 0) {
 		fields.push(thinking(summary.thinkingTokens, summary.thinkingMs, summary.tokensEstimated));
+	} else if (summary.thinkingMs >= 50) {
+		// Hidden thinking without a reasoning count: only its time is known.
+		fields.push(thinking(undefined, summary.thinkingMs, false));
 	}
 	if (summary.stallMs > 0) fields.push(stall(summary.stallMs, summary.stallCount));
 	fields.push(count("req", summary.requests));

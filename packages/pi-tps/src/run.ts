@@ -1,4 +1,4 @@
-import { visibleOutput } from "./aggregate.ts";
+import { tokensEstimated, visibleOutput } from "./aggregate.ts";
 import type { Clock } from "./clock.ts";
 import { type RequestRecord, type RunRecord, TELEMETRY_VERSION, type WorkingSnapshot } from "./telemetry.ts";
 
@@ -46,7 +46,7 @@ export class RunTracker {
 			elapsedMs: this.clock.now() - run.startAt,
 			requests: run.requests.length,
 			outputTokens: run.requests.reduce((sum, record) => sum + visibleOutput(record), 0),
-			estimated: run.requests.some((record) => record.estimated),
+			estimated: run.requests.some(tokensEstimated),
 		};
 	}
 

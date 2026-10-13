@@ -19,7 +19,9 @@ function request(outputTokens: number, thinkingTokens?: number): RequestRecord {
 		burst: false,
 		elapsedMs: 1000,
 		outputMs: 800,
-		thinkingObserved: false,
+		generationMs: 800,
+		generatedTokens: outputTokens,
+		thinking: thinkingTokens === undefined ? "none" : "streamed",
 		estimated: false,
 		inputTokens: 10,
 		outputTokens,
@@ -58,7 +60,7 @@ describe("RunTracker", () => {
 		tracker.add(request(300));
 		clock.t = 18_500;
 		const run = tracker.settle(false);
-		expect(run).toMatchObject({ version: 1, startedAt: 1_700_000_000_000, elapsedMs: 18_400, aborted: false });
+		expect(run).toMatchObject({ version: 2, startedAt: 1_700_000_000_000, elapsedMs: 18_400, aborted: false });
 		expect(run?.requests).toHaveLength(3);
 		expect(tracker.active).toBe(false);
 	});
@@ -84,6 +86,17 @@ describe("RunTracker", () => {
 		expect(tracker.snapshot()?.outputTokens).toBe(300);
 		expect(tracker.requestCount).toBe(1);
 		expect(tracker.settle(true)?.aborted).toBe(true);
+	});
+
+	it("marks the working output when a request's thinking tokens are estimated", () => {
+		tracker.start(1);
+		const record = request(500, 200);
+		tracker.add(record);
+		expect(tracker.snapshot()?.estimated).toBe(true);
+		tracker.discard();
+		tracker.start(1);
+		tracker.add({ ...record, reasoningTokens: 200 });
+		expect(tracker.snapshot()?.estimated).toBe(false);
 	});
 
 	it("ignores records and has no snapshot while idle", () => {

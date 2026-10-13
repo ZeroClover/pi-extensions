@@ -19,7 +19,10 @@ const live: LiveSnapshot = {
 	ttftMs: 1200,
 	liveTps: 48.62,
 	outputTokens: 1200,
+	thinking: "none",
 	calibrated: true,
+	thinkingCalibrated: true,
+	tpsCalibrated: true,
 };
 
 function runSummary(overrides: Partial<RunSummary> = {}): RunSummary {
@@ -98,7 +101,14 @@ describe("readout phases", () => {
 	});
 
 	it("streaming shows live TPS, TTFT, output, thinking and the request number", () => {
-		const snapshot: LiveSnapshot = { ...live, outputTokens: 1200, thinkingTokens: 1900, thinkingMs: 4000, request: 2 };
+		const snapshot: LiveSnapshot = {
+			...live,
+			outputTokens: 1200,
+			thinking: "streamed",
+			thinkingTokens: 1900,
+			thinkingMs: 4000,
+			request: 2,
+		};
 		expect(both(snapshot, "⠙")).toEqual({
 			text: "⠙ TPS 48.6 tok/s · TTFT 1.2s · out 1.2K · think 1.9K 4.0s · req 2",
 			symbols: "⠙ »48.6/s ⇥1.2s ↓1.2K ✻1.9K 4.0s ×2",
@@ -108,6 +118,27 @@ describe("readout phases", () => {
 	it("streaming shows — before live TPS is available", () => {
 		const { liveTps: _omit, ...early } = live;
 		expect(both(early)).toEqual({ text: "⠋ TPS — · TTFT 1.2s · out 1.2K", symbols: "⠋ »— ⇥1.2s ↓1.2K" });
+	});
+
+	it("shows the duration of a phase without deltas and counts TTFT up (hidden thinking in progress)", () => {
+		const { liveTps: _tps, ttftMs: _ttft, ...rest } = live;
+		const hidden: LiveSnapshot = { ...rest, elapsedMs: 4200, outputTokens: 0, thinking: "hidden", thinkingMs: 4000 };
+		expect(both(hidden)).toEqual({ text: "⠋ TPS — · TTFT 4.2s · think 4.0s", symbols: "⠋ »— ⇥4.2s ✻4.0s" });
+	});
+
+	it("shows the generation rate while a summary streams (streaming a thinking summary)", () => {
+		const summary: LiveSnapshot = {
+			...live,
+			liveTps: 160,
+			outputTokens: 0,
+			thinking: "streamed",
+			thinkingTokens: 1900,
+			thinkingMs: 4000,
+		};
+		expect(both(summary)).toEqual({
+			text: "⠋ TPS 160.0 tok/s · TTFT 1.2s · out 0 · think 1.9K 4.0s",
+			symbols: "⠋ »160.0/s ⇥1.2s ↓0 ✻1.9K 4.0s",
+		});
 	});
 
 	it("working shows run time, requests and output, and no rate", () => {
@@ -136,6 +167,33 @@ describe("run summary", () => {
 		});
 	});
 
+	it("shows the generation rate with visible output and thinking (thinking model)", () => {
+		const summary = runSummary({
+			tps: 80,
+			requests: 1,
+			visibleOutputTokens: 800,
+			thinkingTokens: 400,
+			thinkingMs: 5000,
+			stallMs: 0,
+		});
+		expect(both({ phase: "run", run: summary }).text).toBe(
+			"TPS 80.0 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 800 · think 400 5.0s · req 1 · $0.0018",
+		);
+	});
+
+	it("shows a reasoning count without a duration (reasoning count without a phase)", () => {
+		const summary = runSummary({ tps: 100, thinkingTokens: 900, thinkingMs: 0, stallMs: 0 });
+		expect(both({ phase: "run", run: summary })).toMatchObject({
+			text: expect.stringContaining("out 1.4K · think 900 · req 3"),
+			symbols: expect.stringContaining("↓1.4K ✻900 ×3"),
+		});
+	});
+
+	it("shows the duration alone for hidden thinking without a count", () => {
+		const summary = runSummary({ thinkingTokens: 0, thinkingMs: 7500, stallMs: 0 });
+		expect(both({ phase: "run", run: summary }).text).toContain("out 1.4K · think 7.5s · req 3");
+	});
+
 	it("replaces TPS with the burst throughput in a burst-only run", () => {
 		const { tps: _omit, ...rest } = runSummary({
 			burstTps: 225,
@@ -146,6 +204,7 @@ describe("run summary", () => {
 			cacheReadTokens: 0,
 			visibleOutputTokens: 900,
 			thinkingTokens: 0,
+			thinkingMs: 0,
 			stallMs: 0,
 		});
 		const { cost: _cost, ...summary } = rest;
@@ -166,6 +225,7 @@ describe("run summary", () => {
 			cacheReadTokens: 0,
 			visibleOutputTokens: 64,
 			thinkingTokens: 0,
+			thinkingMs: 0,
 			stallMs: 0,
 		});
 		expect(both({ phase: "run", run: summary })).toEqual({
@@ -208,7 +268,7 @@ describe("displayed fields", () => {
 	});
 
 	it("marks every uncalibrated live estimate (uncalibrated live figure)", () => {
-		expect(both({ ...live, calibrated: false })).toEqual({
+		expect(both({ ...live, calibrated: false, tpsCalibrated: false })).toEqual({
 			text: "⠋ TPS ~48.6 tok/s · TTFT 1.2s · out ~1.2K",
 			symbols: "⠋ »~48.6/s ⇥1.2s ↓~1.2K",
 		});
@@ -216,11 +276,39 @@ describe("displayed fields", () => {
 
 	it("keeps the marker on token counts before live TPS is available (uncalibrated warm-up)", () => {
 		const { liveTps: _omit, ...early } = live;
-		const warmUp: LiveSnapshot = { ...early, ttftMs: 700, outputTokens: 10, thinkingTokens: 30, calibrated: false };
+		const warmUp: LiveSnapshot = {
+			...early,
+			ttftMs: 700,
+			outputTokens: 10,
+			thinking: "streamed",
+			thinkingTokens: 30,
+			calibrated: false,
+			thinkingCalibrated: false,
+			tpsCalibrated: false,
+		};
 		expect(both(warmUp)).toEqual({
 			text: "⠋ TPS — · TTFT 0.7s · out ~10 · think ~30",
 			symbols: "⠋ »— ⇥0.7s ↓~10 ✻~30",
 		});
+	});
+
+	it("marks only the figures resting on an uncalibrated kind (output calibrated, thinking not)", () => {
+		const snapshot: LiveSnapshot = {
+			...live,
+			outputTokens: 40,
+			thinking: "streamed",
+			thinkingTokens: 300,
+			thinkingMs: 4000,
+			thinkingCalibrated: false,
+			tpsCalibrated: false,
+		};
+		expect(both(snapshot)).toEqual({
+			text: "⠋ TPS ~48.6 tok/s · TTFT 1.2s · out 40 · think ~300 4.0s",
+			symbols: "⠋ »~48.6/s ⇥1.2s ↓40 ✻~300 4.0s",
+		});
+		expect(both({ ...snapshot, tpsCalibrated: true }).text).toBe(
+			"⠋ TPS 48.6 tok/s · TTFT 1.2s · out 40 · think ~300 4.0s",
+		);
 	});
 
 	it("marks summed tokens that rely on the estimate, independently of the TPS", () => {

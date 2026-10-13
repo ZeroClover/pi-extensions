@@ -6,14 +6,20 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { runsFromEntries, summarizeRun, summarizeSession } from "./aggregate.ts";
-import { CALIBRATION_DIR_NAME, CalibrationStore, calibrationKey, calibrationKeys } from "./calibration.ts";
+import {
+	CALIBRATION_DIR_NAME,
+	CALIBRATION_KINDS,
+	CalibrationStore,
+	calibrationKey,
+	calibrationKeys,
+} from "./calibration.ts";
 import { monotonicClock } from "./clock.ts";
 import { parseTpsCommand, TPS_USAGE, tpsCompletions } from "./command.ts";
 import { CONFIG_FILE_NAME, parseConfig, resolveThresholds, type Threshold, type TpsConfig } from "./config.ts";
 import { STATUS_KEY } from "./constants.ts";
 import { errorMessage, nodeFiles } from "./files.ts";
 import { formatSnapshot } from "./format.ts";
-import { contentDelta, Measurement } from "./measurement.ts";
+import { Measurement, phaseEvent } from "./measurement.ts";
 import { renderLine, StatusWriter } from "./render.ts";
 import { RunTracker } from "./run.ts";
 import {
@@ -231,7 +237,7 @@ export default function (pi: ExtensionAPI): void {
 		const started = rt.meter.requestStart({
 			provider,
 			model: id,
-			ratio: rt.calibration.ratio(calibrationKey(provider, id)),
+			ratios: rt.calibration.ratios(calibrationKey(provider, id)),
 			wallTime: Date.now(),
 		});
 		if (!started) return;
@@ -251,7 +257,7 @@ export default function (pi: ExtensionAPI): void {
 		rt.meter.messageStart({
 			provider: message.provider,
 			model: message.model,
-			ratio: rt.calibration.ratio(calibrationKey(message.provider, message.model)),
+			ratios: rt.calibration.ratios(calibrationKey(message.provider, message.model)),
 		});
 		rt.liveThresholds = resolveThresholds(rt.config, message.provider, message.model);
 	});
@@ -259,8 +265,8 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("message_update", (event) => {
 		const rt = runtime;
 		if (!rt) return;
-		const delta = contentDelta(event.assistantMessageEvent);
-		if (delta) rt.meter.delta(delta.stream, delta.text);
+		const phase = phaseEvent(event.assistantMessageEvent);
+		if (phase) rt.meter.event(phase);
 	});
 
 	pi.on("message_end", (event, ctx) => {
@@ -273,9 +279,11 @@ export default function (pi: ExtensionAPI): void {
 			const { record } = outcome;
 			rt.run.add(record);
 			pi.events.emit(TELEMETRY_CHANNEL, record);
-			if (outcome.calibration) {
+			for (const kind of CALIBRATION_KINDS) {
+				const sample = outcome.calibration[kind];
+				if (!sample) continue;
 				for (const key of calibrationKeys(record.provider, record.model, record.responseModel)) {
-					const warning = rt.calibration.update(key, outcome.calibration, Date.now());
+					const warning = rt.calibration.update(key, kind, sample, Date.now());
 					if (warning) ctx.ui.notify(warning, "warning");
 				}
 			}

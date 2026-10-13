@@ -9,7 +9,11 @@ import {
 } from "./constants.ts";
 import type { BurstReason } from "./telemetry.ts";
 
-/** Arrival times (ascending) and estimated tokens of every content delta of one request. */
+/**
+ * Arrival times (ascending) and arriving estimated tokens of the output deltas (text and tool calls) of one request.
+ * Thinking deltas are left out: a summary arrives in a few chunks at the provider's cadence, which is no evidence of
+ * buffering.
+ */
 export interface DeltaTimeline {
 	readonly at: readonly number[];
 	readonly tokens: readonly number[];
@@ -51,19 +55,15 @@ export function largestClusterShare(timeline: DeltaTimeline): number {
 
 /**
  * Classifies a request as burst delivery (a buffered response flushed at once) rather than streaming.
- * `outputTokens` is the response's output token count; `peakTps` the highest rate computed for it, if any.
- * A response under {@link BURST_MIN_TOKENS} in few batches is merely short, not buffered.
+ * `streamTokens` is the token count of the output stream the timeline describes; `tps` the request's generation
+ * rate, if any. A response under {@link BURST_MIN_TOKENS} in few batches is merely short, not buffered.
  */
-export function classifyBurst(
-	timeline: DeltaTimeline,
-	outputTokens: number,
-	peakTps?: number,
-): BurstReason | undefined {
+export function classifyBurst(timeline: DeltaTimeline, streamTokens: number, tps?: number): BurstReason | undefined {
 	const { at } = timeline;
-	if (countBatches(at) < BURST_MIN_BATCHES && outputTokens >= BURST_MIN_TOKENS) return "few-batches";
+	if (countBatches(at) < BURST_MIN_BATCHES && streamTokens >= BURST_MIN_TOKENS) return "few-batches";
 	// The span is first to last delta, stalls included: a flush after a long silence is exactly what this catches.
 	const span = (at.at(-1) ?? 0) - (at[0] ?? 0);
 	if (span > BURST_CLUSTER_MIN_SPAN_MS && largestClusterShare(timeline) >= BURST_CLUSTER_SHARE) return "cluster";
-	if (peakTps !== undefined && peakTps > MAX_PLAUSIBLE_TPS) return "rate";
+	if (tps !== undefined && tps > MAX_PLAUSIBLE_TPS) return "rate";
 	return undefined;
 }

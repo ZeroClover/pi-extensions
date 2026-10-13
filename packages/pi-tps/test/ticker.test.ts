@@ -59,7 +59,7 @@ describe("Ticker", () => {
 	it("renders about once per interval regardless of the delta rate", () => {
 		const { time, meter, written, ticker } = setup(true);
 		meter.turnStart();
-		meter.requestStart({ provider: "p", model: "m", wallTime: 0 });
+		meter.requestStart({ provider: "p", model: "m", ratios: {}, wallTime: 0 });
 		ticker.start();
 		for (let i = 1; i <= 500; i++) {
 			time.advanceTo(i * 2);
@@ -71,7 +71,7 @@ describe("Ticker", () => {
 	it("renders only on value changes when animation is disabled", () => {
 		const { time, meter, written, ticker } = setup(false);
 		meter.turnStart();
-		meter.requestStart({ provider: "p", model: "m", wallTime: 0 });
+		meter.requestStart({ provider: "p", model: "m", ratios: {}, wallTime: 0 });
 		meter.messageStart();
 		time.advanceTo(50);
 		meter.delta("text", "x");

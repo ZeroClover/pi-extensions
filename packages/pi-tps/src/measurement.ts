@@ -1,21 +1,22 @@
 import { classifyBurst } from "./burst.ts";
-import type { CalibrationSample } from "./calibration.ts";
+import type { CalibrationRatios, CalibrationSample } from "./calibration.ts";
 import type { Clock } from "./clock.ts";
 import {
+	BURST_BATCH_GAP_MS,
 	CLOCK_SKEW_THRESHOLD_MS,
-	LIVE_WARMUP_MS,
+	LIVE_MIN_COUNTED_MS,
 	LIVE_WINDOW_MS,
 	MIN_SETTLED_SPAN_MS,
 	STALL_GAP_MS,
 } from "./constants.ts";
 import { createDeltaEstimator, type DeltaEstimator, type StreamKind } from "./estimator.ts";
-import type { LiveSnapshot, RequestRecord } from "./telemetry.ts";
+import type { LiveSnapshot, RequestRecord, ThinkingKind } from "./telemetry.ts";
 
-/** The model serving a request and its calibration ratio (absent when the model is not calibrated yet). */
+/** The model serving a request and its calibration ratios (a kind is absent while it is not calibrated). */
 export interface RequestIdentity {
 	provider: string;
 	model: string;
-	ratio?: number | undefined;
+	ratios: CalibrationRatios;
 }
 
 /** What is known when a request is sent. */
@@ -41,33 +42,111 @@ export interface EndInput {
 	};
 }
 
+/** Calibration samples a settled request yields, per token kind. */
+export interface CalibrationSamples {
+	output?: CalibrationSample;
+	thinking?: CalibrationSample;
+}
+
 export type EndOutcome =
 	| { kind: "ignored" }
 	| { kind: "errored" }
-	| { kind: "recorded"; record: RequestRecord; calibration?: CalibrationSample };
+	| { kind: "recorded"; record: RequestRecord; calibration: CalibrationSamples };
 
-/** The content-carrying events of Pi's `AssistantMessageEvent`. */
-export interface ContentEvent {
+/** The fields of Pi's `AssistantMessageEvent` that phase tracking reads. */
+export interface AssistantEventLike {
 	type: string;
 	delta?: string;
 }
 
-/** Maps an assistant message event to the stream it extends, or `undefined` when it carries no content. */
-export function contentDelta(event: ContentEvent): { stream: StreamKind; text: string } | undefined {
-	if (event.delta === undefined || event.delta.length === 0) return undefined;
+/** Normalised stream events: the boundaries of thinking blocks, the start of an output block, and content. */
+export type PhaseEvent =
+	| { type: "thinking_start" }
+	| { type: "thinking_end" }
+	| { type: "output_start" }
+	| { type: "delta"; stream: StreamKind; text: string };
+
+function contentEvent(stream: StreamKind, text: string | undefined): PhaseEvent | undefined {
+	return text === undefined || text.length === 0 ? undefined : { type: "delta", stream, text };
+}
+
+/**
+ * Maps an assistant message event to the phase event it carries, or `undefined` for events that neither bound a
+ * thinking block nor carry content (`start`, `text_end`, `toolcall_end`, `done`, `error`, empty deltas).
+ */
+export function phaseEvent(event: AssistantEventLike): PhaseEvent | undefined {
 	switch (event.type) {
+		case "thinking_start":
+			return { type: "thinking_start" };
+		case "thinking_end":
+			return { type: "thinking_end" };
+		case "text_start":
+		case "toolcall_start":
+			return { type: "output_start" };
 		case "thinking_delta":
-			return { stream: "thinking", text: event.delta };
+			return contentEvent("thinking", event.delta);
 		case "text_delta":
-			return { stream: "text", text: event.delta };
+			return contentEvent("text", event.delta);
 		case "toolcall_delta":
-			return { stream: "toolcall", text: event.delta };
+			return contentEvent("toolcall", event.delta);
 		default:
 			return undefined;
 	}
 }
 
-type Kind = "thinking" | "output";
+export type Kind = "thinking" | "output";
+
+/**
+ * Arrivals of one request for the live window: arrival time, arriving raw tokens, kind, and whether the arrival is
+ * attributed to the interval since the previous arrival (false for the first arrival of a phase and output stalls).
+ */
+export interface LiveTimeline {
+	readonly at: readonly number[];
+	readonly tokens: readonly number[];
+	readonly kinds: readonly Kind[];
+	readonly counted: readonly boolean[];
+}
+
+/** Calibrated tokens and counted time inside a window, and the kinds whose tokens contribute. */
+export interface WindowFigures {
+	tokens: number;
+	ms: number;
+	kinds: Set<Kind>;
+}
+
+/**
+ * Sums the counted intervals of a timeline that lie inside `(windowStart, now]`. An interval straddling the window
+ * edge contributes the share of its tokens that matches the share of its duration inside the window. Arrivals are
+ * scanned from the newest, so the cost is the number of arrivals in the window.
+ */
+export function windowFigures(
+	timeline: LiveTimeline,
+	windowStart: number,
+	factor: (kind: Kind) => number,
+): WindowFigures {
+	const figures: WindowFigures = { tokens: 0, ms: 0, kinds: new Set() };
+	for (let i = timeline.at.length - 1; i > 0; i--) {
+		const to = timeline.at[i] ?? 0;
+		if (to <= windowStart) break;
+		if (!timeline.counted[i]) continue;
+		const from = timeline.at[i - 1] ?? to;
+		const kind = timeline.kinds[i] ?? "output";
+		const tokens = (timeline.tokens[i] ?? 0) * factor(kind);
+		const length = to - from;
+		const inside = to - Math.max(from, windowStart);
+		figures.tokens += length > 0 ? (tokens * inside) / length : tokens;
+		figures.ms += inside;
+		if (tokens > 0) figures.kinds.add(kind);
+	}
+	return figures;
+}
+
+interface ThinkingBlock {
+	startAt: number;
+	/** Opened by `thinking_start` rather than by its first delta. */
+	byEvent: boolean;
+	streamed: boolean;
+}
 
 interface Request {
 	context: RequestContext;
@@ -75,22 +154,28 @@ interface Request {
 	headersAt?: number;
 	messageStarted: boolean;
 	estimator: DeltaEstimator;
-	/** Every content delta: arrival time and arriving tokens (the positive part of the estimate increment). */
-	at: number[];
-	tokens: number[];
+	/** Arrivals for the live window; deltas of one network read and phase are merged into one arrival. */
+	live: { at: number[]; tokens: number[]; kinds: Kind[]; counted: boolean[] };
+	/** Output deltas only, for burst detection: arrival time and arriving tokens. */
+	outputAt: number[];
+	outputArrived: number[];
+	/** Identifies the current phase: changes when a thinking block opens or closes. */
+	phase: number;
+	/** Phase, time and kind of the last delta. */
+	lastPhase?: number;
+	lastAt?: number;
 	lastKind?: Kind;
+	block?: ThinkingBlock | undefined;
+	thinking: ThinkingKind;
+	/** Summed wall time of the closed thinking blocks. */
+	thinkingMs: number;
 	firstAt?: number;
 	firstOutputAt?: number;
-	/** Output deltas only, with running totals of arriving tokens, for the live window. */
-	outputAt: number[];
-	outputCumulative: number[];
-	arrivedOutput: number;
 	/** Net estimates, corrections included. */
 	rawOutput: number;
 	rawThinking: number;
-	thinkingDeltas: number;
 	outputSpanMs: number;
-	thinkingSpanMs: number;
+	deltaCount: number;
 	stallCount: number;
 	stallMs: number;
 	inStall: boolean;
@@ -110,16 +195,25 @@ function count(value: number): number {
 	return Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-/** First index whose value is at least `target` in an ascending array. */
-function lowerBound(values: readonly number[], target: number): number {
-	let low = 0;
-	let high = values.length;
-	while (low < high) {
-		const middle = (low + high) >>> 1;
-		if ((values[middle] ?? 0) < target) low = middle + 1;
-		else high = middle;
-	}
-	return low;
+function factors(context: RequestContext): Record<Kind, number> {
+	return { output: context.ratios.output ?? 1, thinking: context.ratios.thinking ?? 1 };
+}
+
+function closeBlock(request: Request, now: number): void {
+	const block = request.block;
+	if (!block) return;
+	request.thinkingMs += now - block.startAt;
+	request.block = undefined;
+	request.phase++;
+}
+
+function openBlock(request: Request, now: number, byEvent: boolean): ThinkingBlock {
+	closeBlock(request, now);
+	const block: ThinkingBlock = { startAt: now, byEvent, streamed: false };
+	request.block = block;
+	request.phase++;
+	if (request.thinking === "none") request.thinking = "hidden";
+	return block;
 }
 
 /**
@@ -179,16 +273,16 @@ export class Measurement {
 			startAt: this.clock.now(),
 			messageStarted: false,
 			estimator: this.createEstimator(),
-			at: [],
-			tokens: [],
+			live: { at: [], tokens: [], kinds: [], counted: [] },
 			outputAt: [],
-			outputCumulative: [],
-			arrivedOutput: 0,
+			outputArrived: [],
+			phase: 0,
+			thinking: "none",
+			thinkingMs: 0,
 			rawOutput: 0,
 			rawThinking: 0,
-			thinkingDeltas: 0,
 			outputSpanMs: 0,
-			thinkingSpanMs: 0,
+			deltaCount: 0,
 			stallCount: 0,
 			stallMs: 0,
 			inStall: false,
@@ -211,45 +305,104 @@ export class Measurement {
 		if (identity) request.context = { ...identity, wallTime: request.context.wallTime };
 	}
 
+	event(event: PhaseEvent): void {
+		switch (event.type) {
+			case "thinking_start":
+				this.thinkingStart();
+				return;
+			case "thinking_end":
+			case "output_start":
+				this.closeThinking();
+				return;
+			case "delta":
+				this.delta(event.stream, event.text);
+				return;
+		}
+	}
+
+	/** A thinking block opens; an open one closes first. */
+	thinkingStart(): void {
+		if (this.request) openBlock(this.request, this.clock.now(), true);
+	}
+
+	/** A thinking block ends (`thinking_end`) or an output block starts; either closes an open thinking block. */
+	closeThinking(): void {
+		if (this.request) closeBlock(this.request, this.clock.now());
+	}
+
 	delta(stream: StreamKind, text: string): void {
 		const request = this.request;
 		if (!request || text.length === 0) return;
 		const now = this.clock.now();
 		const kind: Kind = stream === "thinking" ? "thinking" : "output";
+		if (kind === "thinking") {
+			const block = request.block ?? openBlock(request, now, false);
+			block.streamed = true;
+			request.thinking = "streamed";
+		} else {
+			closeBlock(request, now);
+		}
+		// TTFT ends at the start of the thinking block whose content arrives first, when the provider signalled it.
+		request.firstAt ??= kind === "thinking" && request.block?.byEvent ? request.block.startAt : now;
+
 		// A negative increment corrects the estimate of text already received; it changes the totals, but no tokens
 		// arrived with it, so the live window and the burst features only see the positive part.
 		const increment = request.estimator.add(stream, text);
 		const arrived = Math.max(0, increment);
-		const previousAt = request.at.at(-1);
-		if (previousAt !== undefined) {
-			const gap = now - previousAt;
+		request.deltaCount++;
+
+		const samePhase = request.lastPhase === request.phase && request.lastAt !== undefined;
+		const gap = request.lastAt === undefined ? 0 : now - request.lastAt;
+		let counted = false;
+		if (samePhase && kind === "thinking") {
+			counted = true;
+		} else if (samePhase) {
 			if (gap >= STALL_GAP_MS) {
 				request.stallMs += gap;
 				if (!request.inStall) request.stallCount++;
 				request.inStall = true;
 			} else {
 				request.inStall = false;
-				// A gap between two kinds (thinking to output) belongs to neither span.
-				if (request.lastKind === kind) {
-					if (kind === "thinking") request.thinkingSpanMs += gap;
-					else request.outputSpanMs += gap;
-				}
+				request.outputSpanMs += gap;
+				counted = true;
 			}
+		} else {
+			request.inStall = false;
 		}
-		request.at.push(now);
-		request.tokens.push(arrived);
+		this.recordArrival(request, now, kind, arrived, counted, samePhase && gap < BURST_BATCH_GAP_MS);
+		request.lastPhase = request.phase;
+		request.lastAt = now;
 		request.lastKind = kind;
-		request.firstAt ??= now;
+
 		if (kind === "thinking") {
 			request.rawThinking += increment;
-			request.thinkingDeltas++;
 		} else {
 			request.firstOutputAt ??= now;
 			request.rawOutput += increment;
-			request.arrivedOutput += arrived;
 			request.outputAt.push(now);
-			request.outputCumulative.push(request.arrivedOutput);
+			request.outputArrived.push(arrived);
 		}
+	}
+
+	/** Deltas of one network read in the same phase are one arrival, so they share its interval. */
+	private recordArrival(
+		request: Request,
+		now: number,
+		kind: Kind,
+		tokens: number,
+		counted: boolean,
+		sameRead: boolean,
+	): void {
+		const { live } = request;
+		const last = live.at.length - 1;
+		if (sameRead && last >= 0) {
+			live.tokens[last] = (live.tokens[last] ?? 0) + tokens;
+			return;
+		}
+		live.at.push(now);
+		live.tokens.push(tokens);
+		live.kinds.push(kind);
+		live.counted.push(counted);
 	}
 
 	/** Live figures of the request in flight, computed at the current time; `requestNumber` is its place in the run. */
@@ -257,35 +410,50 @@ export class Measurement {
 		const request = this.request;
 		if (!request) return undefined;
 		const now = this.clock.now();
-		const factor = request.context.ratio ?? 1;
+		const factor = factors(request.context);
+		const { ratios } = request.context;
+		const started = request.firstAt !== undefined || request.thinking !== "none";
 		const snapshot: LiveSnapshot = {
-			phase: request.firstAt === undefined ? "waiting" : "streaming",
+			phase: started ? "streaming" : "waiting",
 			provider: request.context.provider,
 			model: request.context.model,
 			request: requestNumber,
 			elapsedMs: now - request.startAt,
-			outputTokens: request.rawOutput * factor,
-			calibrated: request.context.ratio !== undefined,
+			outputTokens: request.rawOutput * factor.output,
+			thinking: request.thinking,
+			calibrated: ratios.output !== undefined,
+			thinkingCalibrated: ratios.thinking !== undefined,
+			tpsCalibrated: true,
 		};
 		if (request.firstAt !== undefined) snapshot.ttftMs = request.firstAt - request.startAt;
-		if (request.thinkingDeltas > 0) {
-			snapshot.thinkingTokens = request.rawThinking * factor;
-			snapshot.thinkingMs = request.thinkingSpanMs;
+		if (request.thinking !== "none") {
+			snapshot.thinkingMs = request.thinkingMs + (request.block ? now - request.block.startAt : 0);
 		}
-		const liveTps = this.liveTps(request, now);
-		if (liveTps !== undefined) snapshot.liveTps = liveTps * factor;
+		if (request.thinking === "streamed") snapshot.thinkingTokens = request.rawThinking * factor.thinking;
+		const live = this.liveRate(request, now);
+		if (live) {
+			if (live.tps !== undefined) snapshot.liveTps = live.tps;
+			snapshot.tpsCalibrated = [...live.kinds].every((kind) => ratios[kind] !== undefined);
+		}
 		return snapshot;
 	}
 
-	private liveTps(request: Request, now: number): number | undefined {
-		if (request.firstOutputAt === undefined) return undefined;
-		const sinceFirst = now - request.firstOutputAt;
-		if (sinceFirst < LIVE_WARMUP_MS) return undefined;
-		const windowMs = Math.min(LIVE_WINDOW_MS, sinceFirst);
-		const start = lowerBound(request.outputAt, now - LIVE_WINDOW_MS);
-		const before = start > 0 ? (request.outputCumulative[start - 1] ?? 0) : 0;
-		const inWindow = request.arrivedOutput - before;
-		return inWindow / (windowMs / 1000);
+	/**
+	 * The live generation rate: calibrated tokens over counted time in the last 5 s. The time since the last delta
+	 * counts while a thinking phase that streamed is open, or while output flows without a stall. An open thinking
+	 * block that has streamed nothing yet has no rate.
+	 */
+	private liveRate(request: Request, now: number): { tps?: number; kinds: Set<Kind> } | undefined {
+		if (request.block && !request.block.streamed) return undefined;
+		const factor = factors(request.context);
+		const figures = windowFigures(request.live, now - LIVE_WINDOW_MS, (kind) => factor[kind]);
+		let counted = figures.ms;
+		if (request.lastAt !== undefined && request.lastPhase === request.phase) {
+			const since = Math.min(now - request.lastAt, LIVE_WINDOW_MS);
+			if (request.lastKind === "thinking" || since < STALL_GAP_MS) counted += since;
+		}
+		if (counted < LIVE_MIN_COUNTED_MS) return { kinds: figures.kinds };
+		return { tps: figures.tokens / (counted / 1000), kinds: figures.kinds };
 	}
 
 	/** The turn's assistant message ended. Produces a record for settled and aborted requests. */
@@ -294,54 +462,82 @@ export class Measurement {
 		if (!request) return { kind: "ignored" };
 		this.request = undefined;
 		this.turnClosed = true;
+		const now = this.clock.now();
+		closeBlock(request, now);
 		switch (message.stopReason) {
 			case "stop":
 			case "length":
 			case "toolUse":
-				return settle(request, message, this.clock.now(), "settled");
+				return settle(request, message, now, "settled");
 			case "aborted":
-				return settle(request, message, this.clock.now(), "aborted");
+				return settle(request, message, now, "aborted");
 			default:
 				return { kind: "errored" };
 		}
 	}
 }
 
+/**
+ * Token count the few-batches criterion compares with the output deltas' batches: only tokens that arrived as output
+ * deltas, never reasoning tokens (hidden reasoning arrives in no batch, a summary is not output).
+ */
+function burstStreamTokens(
+	reportedOutput: number | undefined,
+	reasoning: number | undefined,
+	thinking: ThinkingKind,
+	estimatedOutput: number,
+): number {
+	if (reportedOutput !== undefined) {
+		if (reasoning !== undefined) return reportedOutput - reasoning;
+		// Without a phase, everything reported was output; this keeps the "no deltas at all" burst case.
+		if (thinking === "none") return reportedOutput;
+	}
+	// The residual of usage.output minus a thinking estimate would carry the whole estimation error of the thinking.
+	return estimatedOutput;
+}
+
 function settle(request: Request, message: EndInput, now: number, outcome: "settled" | "aborted"): EndOutcome {
 	const { usage } = message;
-	const factor = request.context.ratio ?? 1;
+	const factor = factors(request.context);
 	const elapsedMs = now - request.startAt;
 	const reportedOutput = positive(usage.output) ? usage.output : undefined;
-	const rawTotal = request.rawThinking + request.rawOutput;
-	const outputTokens = reportedOutput ?? Math.round(rawTotal * factor);
+	const estimatedOutput = request.rawOutput * factor.output;
+	const estimatedThinking = request.rawThinking * factor.thinking;
+	const outputTokens = reportedOutput ?? Math.round(estimatedOutput + estimatedThinking);
 	// Reasoning is a subset of the output; a larger figure is a provider error.
 	const reasoning = usage.reasoning === undefined ? undefined : Math.min(count(usage.reasoning), outputTokens);
-	const thinkingObserved = request.thinkingDeltas > 0;
+	// Only a positive count is a breakdown: OpenAI-compatible backends report 0 also when they streamed thinking.
+	const breakdown = reasoning !== undefined && reasoning > 0 ? reasoning : undefined;
+	const phaseObserved = request.thinking !== "none";
 
-	let thinkingTokens: number | undefined;
-	let thinkingEstimated = false;
-	if (reasoning !== undefined) {
-		thinkingTokens = reasoning > 0 ? reasoning : undefined;
-	} else if (thinkingObserved) {
-		thinkingTokens = Math.min(Math.round(request.rawThinking * factor), outputTokens);
-		thinkingEstimated = true;
+	let thinkingTokens: number | undefined = breakdown;
+	if (thinkingTokens === undefined && request.thinking === "streamed") {
+		thinkingTokens = Math.min(Math.round(estimatedThinking), outputTokens);
 	}
-
 	const visibleOutput = Math.max(0, outputTokens - (thinkingTokens ?? 0));
+	// Without an observed phase the reasoning time is unknown (part of TTFT), so its tokens are not in the rate.
+	const generatedTokens = phaseObserved ? outputTokens : outputTokens - (breakdown ?? 0);
+	const generationMs = request.thinkingMs + request.outputSpanMs;
+
+	let tps = generationMs >= MIN_SETTLED_SPAN_MS ? generatedTokens / (generationMs / 1000) : undefined;
 	let outputTps =
 		request.outputSpanMs >= MIN_SETTLED_SPAN_MS ? visibleOutput / (request.outputSpanMs / 1000) : undefined;
 	let thinkingTps =
-		thinkingTokens !== undefined && thinkingObserved && request.thinkingSpanMs >= MIN_SETTLED_SPAN_MS
-			? thinkingTokens / (request.thinkingSpanMs / 1000)
+		thinkingTokens !== undefined && phaseObserved && request.thinkingMs >= MIN_SETTLED_SPAN_MS
+			? thinkingTokens / (request.thinkingMs / 1000)
 			: undefined;
 
-	const peakTps = Math.max(outputTps ?? 0, thinkingTps ?? 0);
 	const burstReason =
 		outcome === "settled"
-			? classifyBurst({ at: request.at, tokens: request.tokens }, outputTokens, peakTps > 0 ? peakTps : undefined)
+			? classifyBurst(
+					{ at: request.outputAt, tokens: request.outputArrived },
+					burstStreamTokens(reportedOutput, breakdown, request.thinking, estimatedOutput),
+					tps,
+				)
 			: undefined;
 	let throughputTps: number | undefined;
 	if (burstReason !== undefined) {
+		tps = undefined;
 		outputTps = undefined;
 		thinkingTps = undefined;
 		throughputTps = elapsedMs > 0 ? outputTokens / (elapsedMs / 1000) : undefined;
@@ -354,15 +550,17 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		outcome,
 		burst: burstReason !== undefined,
 		elapsedMs: round(elapsedMs, 0),
-		// Rounded down so that a span below the 1 s threshold stays below it after persistence.
+		// Rounded down so that a time below the 1 s threshold stays below it after persistence.
 		outputMs: Math.floor(request.outputSpanMs),
-		thinkingObserved,
-		estimated: reportedOutput === undefined || thinkingEstimated,
+		generationMs: Math.floor(generationMs),
+		generatedTokens,
+		thinking: request.thinking,
+		estimated: reportedOutput === undefined,
 		inputTokens: count(usage.input),
 		outputTokens,
 		cacheReadTokens: count(usage.cacheRead),
 		cacheWriteTokens: count(usage.cacheWrite),
-		deltaCount: request.at.length,
+		deltaCount: request.deltaCount,
 		stallCount: request.stallCount,
 		stallMs: round(request.stallMs, 0),
 	};
@@ -373,10 +571,11 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	if (request.firstAt !== undefined) record.ttftMs = round(request.firstAt - request.startAt, 0);
 	if (request.firstOutputAt !== undefined) record.ttftTextMs = round(request.firstOutputAt - request.startAt, 0);
 	if (request.headersAt !== undefined) record.headersMs = round(request.headersAt - request.startAt, 0);
+	if (tps !== undefined) record.tps = round(tps, 2);
 	if (outputTps !== undefined) record.outputTps = round(outputTps, 2);
 	if (thinkingTps !== undefined) record.thinkingTps = round(thinkingTps, 2);
 	if (throughputTps !== undefined) record.throughputTps = round(throughputTps, 2);
-	if (thinkingObserved) record.thinkingMs = Math.floor(request.thinkingSpanMs);
+	if (phaseObserved) record.thinkingMs = Math.floor(request.thinkingMs);
 	if (thinkingTokens !== undefined) record.thinkingTokens = thinkingTokens;
 	if (reasoning !== undefined) record.reasoningTokens = reasoning;
 	if (positive(usage.cost.total)) record.cost = usage.cost.total;
@@ -386,13 +585,18 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	}
 
 	if (outcome !== "settled" || burstReason !== undefined || reportedOutput === undefined) {
-		return { kind: "recorded", record };
+		return { kind: "recorded", record, calibration: {} };
 	}
-	// With a reasoning breakdown, compare visible output only: streamed thinking is often a summary or hidden,
-	// so its raw estimate does not correspond to the reasoning tokens in usage.output.
-	const calibration: CalibrationSample =
-		reasoning !== undefined
-			? { reported: reportedOutput - reasoning, estimated: request.rawOutput }
-			: { reported: reportedOutput, estimated: rawTotal };
+	// With a reasoning breakdown, compare visible output only: streamed thinking is often a summary or hidden, so its
+	// raw estimate does not correspond to the reasoning tokens in usage.output. Without one, compare the total.
+	const calibration: CalibrationSamples = {
+		output:
+			breakdown !== undefined
+				? { reported: reportedOutput - breakdown, estimated: request.rawOutput }
+				: { reported: reportedOutput, estimated: request.rawOutput + request.rawThinking },
+	};
+	if (breakdown !== undefined && request.thinking === "streamed") {
+		calibration.thinking = { reported: breakdown, estimated: request.rawThinking };
+	}
 	return { kind: "recorded", record, calibration };
 }
