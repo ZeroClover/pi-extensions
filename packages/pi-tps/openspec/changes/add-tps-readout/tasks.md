@@ -62,6 +62,7 @@
 - [x] 9.7 Update `packages/pi-tps/README.md` (readout in both styles, symbol legend, run semantics, `labels` setting, per-run persistence, event channels) and the root README description; verify the documented names match the code and the README example config still loads without warnings
 - [x] 9.8 Live verification in a TUI session: a prompt with tool calls shows waiting, streaming and working phases and a single summary after the run settles; both label styles render; Escape gives the aborted summary; `/reload` and `/tree` restore the last run and session figures; print and RPC modes append one `pi-tps` entry per run and send no status text; record the observed readouts in the final report
 - [x] 9.9 Run `pnpm check` from the repository root and the load smoke test; verify both pass with no new warnings
+- [x] 9.10 Expand the README into a reference for readers: what the line shows in each state, every field in both styles with the states it appears in and what it measures, the markers and colours, and one summary line explained field by field; verify each statement against `src/format.ts`, `src/aggregate.ts` and `src/run.ts`
 
 ## Workflow follow-up
 

@@ -22,52 +22,89 @@ pi install /absolute/path/to/packages/pi-tps  # install for the user
 
 Visibility and mode last until the extension runtime is replaced (`/reload`, session switch), which restores `enabled` and `summaryMode` from the configuration.
 
-## Readout
+## Reading the readout
 
-A **run** is everything Pi does for one prompt: every provider request, tool call, automatic retry and queued continuation, from `agent_start` until Pi settles. The summary appears only once the run has settled; averaging after each request of a multi-request run would only flicker.
+The readout is one line in Pi's footer, on the status line it shares with other extensions. It follows the **run**: everything Pi does for one prompt, from the moment you send it until Pi stops on its own. That covers every request to the model, every tool call between them, automatic retries and queued follow-ups. While the run is active the line shows what is happening right now; when the run has finished it shows one summary of the whole run. pi-tps never shows an average in the middle of a run, because the requests of one prompt (thinking, tool calls, the final answer) differ too much for a running average to mean anything.
 
-The default `text` labels, and the `symbols` style (`"labels": "symbols"`):
+Every field exists in two styles: `text` (the default) names it with a short word, `symbols` (`"labels": "symbols"` in the [configuration](#configuration)) marks it with one character. Both styles show the same fields in the same order.
 
-```
-            text                                                       symbols
-waiting     ⠋ TTFT 1.2s                                                 ⠋ ⇥1.2s
-streaming   ⠙ TPS 48.6 tok/s · TTFT 1.2s · out 1.2K · think 1.9K 4.0s   ⠙ »48.6/s ⇥1.2s ↓1.2K ✻1.9K 4.0s
-working     ⠹ run 12.3s · req 1 · out 1.6K                              ⠹ 12.3s ×1 ↓1.6K
-summary     TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%)   ✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K
-              · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3           ✻94 4.1s ‖1.2s×1 ×3 $0.0018
-              · $0.0018
-burst only  burst 225.0 tok/s · TTFT 4.0s · 4.0s · in 3.1K · out 900    ✓ ↯225.0/s ⇥4.0s 4.0s ↑3.1K ↓900 ×1
-              · req 1
-aborted     aborted · TPS 47.0 tok/s · TTFT 0.6s · 5.0s · out 64        ✗ »47.0/s ⇥0.6s 5.0s ↓64 ×1
-              · req 1
-session     session · TPS 110.0 tok/s · TTFT 0.6s · in 40K · out 6.2K   Σ »110.0/s ⇥0.6s ↑40K ↓6.2K ×3 $0.050
-              · runs 3 · $0.050
-no data     TPS — · TTFT —                                              · »— ⇥—
-```
+### What you see during a run
 
-Each readout is one footer line; the wrapped lines above are for this page only. Fields appear in order of importance, so when the footer is too narrow Pi truncates the least important ones. Waiting and streaming add `req N` from the second request of a run on.
+A spinner (`⠋⠙⠹…`) at the start of the line means a run is active. The line then goes through these states, repeating the first three for every request of the run:
+
+| State | Example (text) | Example (symbols) | When |
+|---|---|---|---|
+| Waiting | `⠋ TTFT 1.2s` | `⠋ ⇥1.2s` | A request has been sent and nothing has come back yet. `TTFT` counts up. |
+| Streaming | `⠙ TPS 48.6 tok/s · TTFT 1.2s · out 1.2K · think 1.9K 4.0s · req 2` | `⠙ »48.6/s ⇥1.2s ↓1.2K ✻1.9K 4.0s ×2` | The model is answering. Figures are for this request only and update about ten times a second. |
+| Working | `⠹ run 12.3s · req 1 · out 1.6K` | `⠹ 12.3s ×1 ↓1.6K` | Between two requests, usually while a tool runs. No speed is shown because nothing is being generated. |
+| Summary | `TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3 · $0.0018` | `✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K ✻94 4.1s ‖1.2s×1 ×3 $0.0018` | The run has finished. The line stays until the next run starts. |
+
+When idle, `/tps mode session` replaces the last run's summary with the session average, and `/tps mode last` switches back:
+
+| State | Example (text) | Example (symbols) | When |
+|---|---|---|---|
+| Session | `session · TPS 110.0 tok/s · TTFT 0.6s · in 40K · out 6.2K · runs 3 · $0.050` | `Σ »110.0/s ⇥0.6s ↑40K ↓6.2K ×3 $0.050` | Idle in `session` mode: all runs on the current branch together. |
+| No data | `TPS — · TTFT —` (`session · TPS — · TTFT —` in session mode) | `· »— ⇥—` (`Σ »— ⇥—`) | Nothing measured yet on this branch. |
+
+Two variants of the summary:
+
+| Variant | Example (text) | Example (symbols) | Meaning |
+|---|---|---|---|
+| Aborted | `aborted · TPS 47.0 tok/s · TTFT 0.6s · 5.0s · out 64 · req 1` | `✗ »47.0/s ⇥0.6s 5.0s ↓64 ×1` | You pressed Escape. The figures cover what had arrived until then. |
+| Burst only | `burst 225.0 tok/s · TTFT 4.0s · 4.0s · in 3.1K · out 900 · req 1` | `✓ ↯225.0/s ⇥4.0s 4.0s ↑3.1K ↓900 ×1` | Every answer of the run arrived in one piece instead of streaming (typically a proxy that buffers responses), so the generation speed cannot be measured. |
+
+### Fields
+
+Each field appears only when it has a value; the table says in which states. Fields come in order of importance, so when the footer is too narrow Pi cuts the line from the end.
+
+| Text | Symbol | Shown in | Meaning |
+|---|---|---|---|
+| `TPS 48.6 tok/s` | `»48.6/s` | Streaming, summary, session | **Generation speed**: output tokens per second while the model is actually writing. Waiting for the first token and pauses (see `stall`) do not count. While streaming it is the speed over the last 5 seconds of this request; it shows `—` until 1.5 s after the first visible token, so it also stays `—` while the model only thinks. In a summary it is the speed over all requests of the run that wrote for at least one second, weighted by their tokens; short requests such as tool calls are left out because they are too short to time. The figure is coloured by speed: by default the theme's error colour below 30 tok/s, its warning colour from 30 and its success colour from 80 (red, yellow and green in most themes; see `thresholds`). |
+| `burst 225.0 tok/s` | `↯225.0/s` | Summary, session | Replaces `TPS` when every request of the run arrived in one piece: output tokens divided by the whole time from sending the request to the end, waiting included. It describes delivery, not generation speed, so it is never coloured. |
+| `TTFT 1.2s` | `⇥1.2s` | Waiting, streaming, summary, session | **Time to first token**: from sending a request until the first piece of the answer (text, thinking or tool call) arrives. It counts up while waiting and freezes when the first token arrives. Summaries show the average over the run's requests. |
+| `18.4s` | `18.4s` | Summary | **Run duration**: wall-clock time from sending the prompt until Pi finished, including tool execution and waiting. This is the only field without a label. |
+| `run 12.3s` | `12.3s` | Working | Time since the run started. Keeps counting while tools execute. |
+| `in 6.2K (cache 92%)` | `↑6.2K ↻92%` | Summary, session | **Input tokens** sent to the model, added up over every request. Each request re-sends the conversation, so a run of several requests sends the context several times; this is what you pay for. Cached tokens are included. The percentage in parentheses (`↻`) is the share of that input read from the provider's prompt cache, which is cheaper and faster; it is left out when nothing came from the cache. Left out entirely when no input was reported (for example a run aborted before the first answer). |
+| `out 1.4K` | `↓1.4K` | Streaming, working, summary, session | **Output tokens** the model wrote as answer text and tool-call arguments, without thinking. While streaming it is an estimate for the current request; while working, the total of the run's finished requests; in summaries, the total reported by the provider. |
+| `think 94 4.1s` | `✻94 4.1s` | Streaming, summary | **Thinking**: the number of reasoning tokens, then how long the model spent producing them. The time is left out when the provider keeps its thinking hidden (only the token count is known) or when it is under 0.05 s. |
+| `stall 1.2s×1` | `‖1.2s×1` | Summary | **Pauses** in the middle of an answer: the total time the stream stopped for half a second or more, then how many times it stopped. Shown only when the stream paused; this time is excluded from `TPS`. |
+| `req 2` | `×2` | Waiting, streaming | **Which request** of the run this is. Shown from the second request on. |
+| `req 1` | `×1` | Working, summary | **How many requests** the run has made so far, or made in total. Requests that failed with an error do not count. |
+| `runs 3` | `×3` | Session | **How many runs** (prompts) the session average covers. |
+| `$0.0018` | `$0.0018` | Summary, session | **Cost** in US dollars, added up. Shown only for models that have a price in Pi. |
+
+### Markers
 
 | Text | Symbol | Meaning |
 |---|---|---|
-| `⠋⠙⠹…` | `⠋⠙⠹…` | A run is active (spinner; static first frame when animation is off) |
-| `TPS 48.6 tok/s` | `»48.6/s` | Output tokens per second, coloured by the thresholds. Live: last 5 s. Summary: token-weighted over the run (or session) |
-| `burst 225.0 tok/s` | `↯225.0/s` | Only burst deliveries: end-to-end throughput instead of a generation rate, uncoloured |
-| `TTFT 1.2s` | `⇥1.2s` | Time to first token; counts up while waiting. Summary: mean over the non-aborted requests |
-| `18.4s` | `18.4s` | Run wall time; `run 12.3s` while working |
-| `in 6.2K (cache 92%)` | `↑6.2K ↻92%` | Input tokens with cache reads and writes folded in, and the share read from the cache |
-| `out 1.4K` | `↓1.4K` | Visible output tokens (thinking not included). Estimated while streaming, reported in summaries |
-| `think 94 4.1s` | `✻94 4.1s` | Thinking tokens and active thinking time |
-| `stall 1.2s×1` | `‖1.2s×1` | Stall time and number of stalls |
-| `req 3` / `runs 3` | `×3` | Requests in the run / runs in the session |
-| `$0.0018` | `$0.0018` | Cost in USD, only for models with a price |
-| — | `✓` | Completed run |
-| `aborted` | `✗` | Run aborted (Escape); figures of the requests observed so far |
-| `session` | `Σ` | Session average and totals |
-| — | `·` | No run yet in `last` mode |
-| `~` | `~` | Before a rate: the model is not calibrated yet, or the figure relies on the token estimate |
-| `—` | `—` | Not known (yet) |
+| `⠋⠙⠹…` | `⠋⠙⠹…` | A run is active. Turning animation off shows the first frame without rotating. |
+| (none) | `✓` | Summary of a finished run. |
+| `aborted` | `✗` | Summary of a run you stopped with Escape. |
+| `session` | `Σ` | Session average instead of the last run. |
+| (none) | `·` | No run measured yet. |
+| `~` before a speed | `~` before a speed | The speed rests on an estimate. While streaming: pi-tps has not yet learned how this model counts tokens, so the live figure may be off by tens of percent until the first answer of this model finishes. In a summary: the provider did not report the numbers needed, so part of the figure was estimated. |
+| `—` | `—` | Not known: not measured yet, or not measurable (for example a run with only very short answers). |
 
-Token counts use `K`, `M`, `B` with one decimal (`1.2K`, `40K`). Durations show one decimal below a minute (`18.4s`), then two units (`1m 30s`, `2h 15m`). Symbols are single-cell, non-emoji characters, so the footer keeps its width.
+Except for the speed, every field uses the base colour (`dim` by default, see `baseColor`).
+
+### One line, field by field
+
+The summary `TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3 · $0.0018`, or `✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K ✻94 4.1s ‖1.2s×1 ×3 $0.0018` in the symbol style, reads:
+
+1. `✓` (symbols only): the run has finished normally.
+2. `TPS 110.5 tok/s` / `»110.5/s`: while writing, the model produced 110.5 tokens per second.
+3. `TTFT 0.7s` / `⇥0.7s`: on average each request waited 0.7 s for its first token.
+4. `18.4s`: the whole prompt took 18.4 s from sending to finished, tools included.
+5. `in 6.2K (cache 92%)` / `↑6.2K ↻92%`: the three requests sent 6 200 input tokens in total, 92 % of them from the prompt cache.
+6. `out 1.4K` / `↓1.4K`: the model wrote 1 400 tokens of answer and tool calls.
+7. `think 94 4.1s` / `✻94 4.1s`: it also produced 94 thinking tokens, over 4.1 s.
+8. `stall 1.2s×1` / `‖1.2s×1`: the stream paused once, for 1.2 s.
+9. `req 3` / `×3`: the prompt took three requests (for example two tool calls and the final answer).
+10. `$0.0018`: the run cost 0.18 US cents.
+
+### Number formats
+
+Token counts below 1000 are exact; larger ones use `K` (thousand), `M` (million) and `B` (billion) with one decimal, dropping `.0` (`1.2K`, `40K`). Durations show one decimal below a minute (`18.4s`), then the two largest units (`1m 30s`, `2h 15m`, `3d 12h`). Speeds always show one decimal. Costs show four decimals below one cent, three below one dollar, then two.
 
 ## Measurement
 
