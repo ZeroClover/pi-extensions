@@ -230,7 +230,7 @@ describe("live output TPS", () => {
 		expect(meter.snapshot()?.calibrated).toBe(false);
 	});
 
-	it("never shows a negative live rate when the window holds an estimator correction", () => {
+	it("counts only arriving tokens in the live window, not estimator corrections", () => {
 		const corrections = [5, 5, 5, -12];
 		meter = new Measurement(clock, () => ({ add: () => corrections.shift() ?? 0 }));
 		start();

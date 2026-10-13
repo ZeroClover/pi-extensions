@@ -118,7 +118,7 @@ At `message_end`, when `usage.output` is a finite positive number, settled outpu
 - **THEN** the request has no settled TPS of its own and does not contribute to the run TPS; its tokens still count toward the sums
 
 ### Requirement: Burst detection
-Content deltas less than 1 ms after the previous one SHALL form one arrival batch (one network read). A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 batches for a response of at least 50 output tokens; a 100 ms window carrying at least 50 % of its estimated tokens while the stream (first to last delta) lasts more than 1 s; or a computed settled TPS above 10 000.
+Content deltas less than 1 ms after the previous one SHALL form one arrival batch (one network read). A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 batches for a response of at least 50 output tokens; a 100 ms window carrying at least 50 % of its arriving tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the stream (first to last delta) lasts more than 1 s; or a computed settled TPS above 10 000.
 
 #### Scenario: Too few batches
 - **WHEN** a 900-token response arrives as 3 deltas
@@ -154,6 +154,10 @@ A burst request SHALL report throughput, `usage.output / (end − request start)
 #### Scenario: Proxy flush after a long wait
 - **WHEN** 10 small deltas arrive in 2 ms after 6 s of silence following a normal 1 s of streaming
 - **THEN** the request is marked burst
+
+#### Scenario: Estimator correction at the end
+- **WHEN** `123456`, `789012`, `345678`, `90` and `n` arrive 300 ms apart and the last delta lowers the running estimate
+- **THEN** the request is not marked burst
 
 #### Scenario: Genuine fast streaming
 - **WHEN** 300 deltas arrive with a median gap of 3 ms over 1 s

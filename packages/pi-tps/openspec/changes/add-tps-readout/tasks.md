@@ -73,6 +73,17 @@
 - [x] 10.5 R6: align README and design (aborted fallback, errored requests show the working phase, "aggregate generation rate" instead of "token-weighted", live window includes pauses, calibration directory); verify every statement against the code
 - [x] 10.6 Run `pnpm check`, the load smoke test and a live TUI run (tool calls, Escape, `/reload`) and two concurrent print sessions writing calibration; verify the newest calibration version holds both models
 
+## 11. Third review fixes (REVIEW.md)
+
+- [x] 11.1 Calibration ABA: give each sample an id, record the last 512 applied ids per version, apply only unrecorded samples, and treat a sample as stored only when the newest version lists it; verify `test/calibration.test.ts` covers "Writer paused across several publishes" on the memory layer and on a real directory, plus the existing concurrency scenarios without double counting
+- [x] 11.2 Arrivals versus corrections: record only the positive part of each estimate increment in the live window and burst timeline, keep corrections in the totals; verify `test/pipeline.test.ts` (real estimator → Measurement → burst → aggregate) covers "Estimator correction at the end" and that the cluster share stays within 100 %
+- [x] 11.3 Update README (estimation, burst, calibration files) and run `pnpm check`, the load smoke test and two concurrent print sessions; verify the newest calibration version holds both models
+
+## 12. Fourth review fixes (REVIEW.md)
+
+- [x] 12.1 Replace the bounded sample-id list with per-session sequence numbers: a random session id per store, ordered sample numbers, a `writers` record per version carried forward, exact confirmation, 7-day removal of stale records, own record removed at shutdown, unprovable samples dropped when the own record vanished; verify `test/calibration.test.ts` covers "Large backlog" (512, 513 and 1025 samples, checking samples, ratio and updatedAt after a restart), "Pause after publishing", "Crashed session", "Session paused beyond the retention", the existing concurrency and ABA scenarios, and removal at shutdown
+- [x] 12.2 Update README and run `pnpm check`, the load smoke test and two concurrent print sessions; verify the newest version holds the expected samples and no record of the finished sessions
+
 ## Workflow follow-up
 
 - Archive the change after review (`openspec archive add-tps-readout` from `packages/pi-tps`), then commit as `feat(pi-tps): add live TPS readout`.

@@ -162,8 +162,8 @@ export default function (pi: ExtensionAPI): void {
 		rt.meter.reset();
 		rt.run.discard();
 		rt.unsubscribeRequest();
-		// Samples that lost a publish race or hit a write failure get a last chance.
-		const warning = rt.calibration.flush();
+		// Samples that lost a publish race or hit a write failure get a last chance; then the session's record goes.
+		const warning = rt.calibration.close();
 		if (warning) ctx.ui.notify(warning, "warning");
 		if (rt.tui) ctx.ui.setStatus(STATUS_KEY, undefined);
 		pi.events.emit(STATUS_CHANNEL, null);

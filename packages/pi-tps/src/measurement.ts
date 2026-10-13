@@ -75,15 +75,17 @@ interface Request {
 	headersAt?: number;
 	messageStarted: boolean;
 	estimator: DeltaEstimator;
-	/** Every content delta: arrival time and raw estimate. */
+	/** Every content delta: arrival time and arriving tokens (the positive part of the estimate increment). */
 	at: number[];
 	tokens: number[];
 	lastKind?: Kind;
 	firstAt?: number;
 	firstOutputAt?: number;
-	/** Output deltas only, with running raw totals, for the live window. */
+	/** Output deltas only, with running totals of arriving tokens, for the live window. */
 	outputAt: number[];
 	outputCumulative: number[];
+	arrivedOutput: number;
+	/** Net estimates, corrections included. */
 	rawOutput: number;
 	rawThinking: number;
 	thinkingDeltas: number;
@@ -181,6 +183,7 @@ export class Measurement {
 			tokens: [],
 			outputAt: [],
 			outputCumulative: [],
+			arrivedOutput: 0,
 			rawOutput: 0,
 			rawThinking: 0,
 			thinkingDeltas: 0,
@@ -213,7 +216,10 @@ export class Measurement {
 		if (!request || text.length === 0) return;
 		const now = this.clock.now();
 		const kind: Kind = stream === "thinking" ? "thinking" : "output";
-		const tokens = request.estimator.add(stream, text);
+		// A negative increment corrects the estimate of text already received; it changes the totals, but no tokens
+		// arrived with it, so the live window and the burst features only see the positive part.
+		const increment = request.estimator.add(stream, text);
+		const arrived = Math.max(0, increment);
 		const previousAt = request.at.at(-1);
 		if (previousAt !== undefined) {
 			const gap = now - previousAt;
@@ -231,17 +237,18 @@ export class Measurement {
 			}
 		}
 		request.at.push(now);
-		request.tokens.push(tokens);
+		request.tokens.push(arrived);
 		request.lastKind = kind;
 		request.firstAt ??= now;
 		if (kind === "thinking") {
-			request.rawThinking += tokens;
+			request.rawThinking += increment;
 			request.thinkingDeltas++;
 		} else {
 			request.firstOutputAt ??= now;
-			request.rawOutput += tokens;
+			request.rawOutput += increment;
+			request.arrivedOutput += arrived;
 			request.outputAt.push(now);
-			request.outputCumulative.push(request.rawOutput);
+			request.outputCumulative.push(request.arrivedOutput);
 		}
 	}
 
@@ -277,8 +284,7 @@ export class Measurement {
 		const windowMs = Math.min(LIVE_WINDOW_MS, sinceFirst);
 		const start = lowerBound(request.outputAt, now - LIVE_WINDOW_MS);
 		const before = start > 0 ? (request.outputCumulative[start - 1] ?? 0) : 0;
-		// Estimator corrections can be negative; a window holding mostly a correction must not show a negative rate.
-		const inWindow = Math.max(0, request.rawOutput - before);
+		const inWindow = request.arrivedOutput - before;
 		return inWindow / (windowMs / 1000);
 	}
 

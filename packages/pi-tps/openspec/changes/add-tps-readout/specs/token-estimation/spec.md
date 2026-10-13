@@ -14,7 +14,7 @@ Each content delta SHALL be estimated once when it arrives; estimates SHALL be a
 - **THEN** computing the live window total touches only the deltas inside the window, not the full text
 
 ### Requirement: Estimates do not depend on delta size
-After every delta, the running total of a stream SHALL equal the estimator's estimate of the text received so far, whatever the delta sizes, as long as no single segment (a run of word characters, or a run of whitespace and punctuation) is longer than 512 characters. Per-delta increments MAY be negative when appended text changes how a segment is estimated. Longer segments SHALL be estimated in 256-character pieces, each piece on its own, so that each delta costs bounded work.
+After every delta, the running total of a stream SHALL equal the estimate of the text received so far whenever no single segment (a run of word characters, or of whitespace and punctuation) exceeds 512 characters; longer segments SHALL be estimated in 256-character pieces. Increments MAY be negative; a negative increment corrects the total and SHALL NOT count as arriving tokens.
 
 #### Scenario: Suffix changes a segment's class
 - **WHEN** `12345678901234567890n` streams one character per delta
@@ -85,7 +85,7 @@ Calibration ratios SHALL be stored in the directory `<agent-dir>/pi-tps-calibrat
 - **THEN** the newest valid version is used and the user sees one warning
 
 ### Requirement: Calibration is shared by concurrent sessions
-Each update SHALL publish the next version, derived from the newest one, with an exclusive and atomic file creation; a session that loses the race SHALL re-read the newest version and apply its samples again. Samples not yet published (lost races, failing writes) SHALL be kept as samples, applied on top of the newest version for the session's own ratios, and retried with the next update and at session shutdown.
+Each session SHALL number its samples in order, and each version SHALL record per session the highest number applied to it. An update SHALL publish the next version, derived from the newest one, with an exclusive and atomic creation; a sample SHALL count as stored exactly when the newest version records its number for its session. Samples not yet stored SHALL be applied once on top of the newest version for the session's own ratios and retried with the next update and at session shutdown.
 
 #### Scenario: Concurrent sessions
 - **WHEN** two Pi sessions update different models at the same moment
@@ -95,6 +95,18 @@ Each update SHALL publish the next version, derived from the newest one, with an
 - **WHEN** a session's sample for a model is not yet published while another session publishes a sample for the same model
 - **THEN** the newest version afterwards reflects both samples and the other session's sample is not reverted
 
+#### Scenario: Writer paused across several publishes
+- **WHEN** a session reads version 1, pauses while another session publishes versions 2 to 5 and removes old ones, then creates version 2 again
+- **THEN** the session sees that the newest version lacks its sample, publishes it on top of version 5, and a new session restores it
+
+#### Scenario: Large backlog
+- **WHEN** 513 samples queue up while writing fails and writing then succeeds
+- **THEN** a new session restores exactly 513 samples and the ratio and time of the last one
+
+#### Scenario: Pause after publishing
+- **WHEN** a session publishes its sample and pauses while other sessions publish 512 samples, then checks the newest version
+- **THEN** it finds its sample stored and does not apply it again
+
 #### Scenario: No later update
 - **WHEN** the last sample of a session could not be published when it arrived
 - **THEN** it is published at session shutdown
@@ -102,6 +114,17 @@ Each update SHALL publish the next version, derived from the newest one, with an
 #### Scenario: Unwritable file
 - **WHEN** the directory is readable but every write fails and three samples of 2 arrive for a model with ratio 1
 - **THEN** the in-memory ratio keeps converging toward 2
+
+### Requirement: Session records are reclaimed safely
+A session SHALL remove its own record from the newest version when it shuts down. Records of sessions not seen for 7 days SHALL be removed by the next publish. A session that finds its own record removed although it published before SHALL drop the samples whose storage it can no longer prove instead of applying them again.
+
+#### Scenario: Crashed session
+- **WHEN** a session's record was last updated 8 days ago and another session publishes
+- **THEN** the new version no longer holds that record
+
+#### Scenario: Session paused beyond the retention
+- **WHEN** a session published samples, paused for more than 7 days so that its record was removed, and resumes
+- **THEN** it drops those samples and the stored ratio is not changed by them a second time
 
 ### Requirement: Model identity
 Live figures SHALL use the calibration ratio of the model that serves the request: the selected model when the request starts, replaced by the model named in the assistant `message_start` (the physical model behind a virtual model) as soon as it is known. When the active model changes, subsequent live figures SHALL use the ratio of the new model.

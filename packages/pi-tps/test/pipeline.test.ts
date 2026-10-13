@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { summarizeRun } from "../src/aggregate.ts";
+import { largestClusterShare } from "../src/burst.ts";
 import type { Clock } from "../src/clock.ts";
+import { createDeltaEstimator } from "../src/estimator.ts";
 import { formatSnapshot, plainText } from "../src/format.ts";
 import { type EndInput, Measurement } from "../src/measurement.ts";
 import { RunTracker } from "../src/run.ts";
@@ -62,6 +64,43 @@ describe("request settlement and run aggregation agree after persistence (span j
 		const request: RequestRecord | undefined = run.requests[0];
 		expect(request?.outputTps !== undefined).toBe(contributes);
 		expect(summarizeRun(run).tps !== undefined).toBe(contributes);
+	});
+});
+
+describe("estimator corrections are not token arrivals (estimator correction at the end)", () => {
+	function settleWithRealEstimator(deltas: string[], output: number): RunRecord {
+		const clock = new FakeClock();
+		const meter = new Measurement(clock, createDeltaEstimator);
+		const run = new RunTracker(clock);
+		run.start(1);
+		meter.turnStart();
+		meter.requestStart({ provider: "p", model: "m", wallTime: 1 });
+		meter.messageStart();
+		deltas.forEach((delta, i) => {
+			clock.t = 500 + i * 300;
+			meter.delta("text", delta);
+		});
+		const outcome = meter.end(end(output));
+		if (outcome.kind !== "recorded") throw new Error(`expected a record, got ${outcome.kind}`);
+		run.add(outcome.record);
+		const record = run.settle(false);
+		if (!record) throw new Error("no run");
+		return record;
+	}
+
+	it("does not mark evenly arriving deltas as burst when the last one lowers the estimate", () => {
+		const run = settleWithRealEstimator(["123456", "789012", "345678", "90", "n"], 30);
+		expect(run.requests[0]).toMatchObject({ burst: false, outputMs: 1200, outputTps: 25 });
+		expect(summarizeRun(run).tps).toBe(25);
+	});
+
+	it("keeps the cluster share a share of arriving tokens, at most 100 %", () => {
+		// The real estimator's increments for these deltas are 7, -4, 0, 1, 0; only the positive parts arrive.
+		const estimator = createDeltaEstimator();
+		const increments = ["12345678901234567890", "n", " ", "a", "b"].map((delta) => estimator.add("text", delta));
+		expect(increments.some((increment) => increment < 0)).toBe(true);
+		const tokens = increments.map((increment) => Math.max(0, increment));
+		expect(largestClusterShare({ at: [0, 300, 600, 900, 1200], tokens })).toBeLessThanOrEqual(1);
 	});
 });
 

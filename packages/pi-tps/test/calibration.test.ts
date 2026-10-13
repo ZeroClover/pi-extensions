@@ -1,3 +1,5 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -7,8 +9,9 @@ import {
 	isCalibratable,
 	nextEntry,
 	parseCalibration,
+	WRITER_RETENTION_MS,
 } from "../src/calibration.ts";
-import type { FileLayer } from "../src/files.ts";
+import { type FileLayer, nodeFiles } from "../src/files.ts";
 
 const DIR = "/agent/pi-tps-calibration";
 
@@ -24,6 +27,8 @@ function file(models: Record<string, { ratio: number; samples: number; updatedAt
 class MemoryDir implements FileLayer {
 	readonly files = new Map<string, string>();
 	beforePublish: (() => void) | undefined;
+	/** Runs once right after the next successful creation, before publish returns. */
+	afterPublish: (() => void) | undefined;
 	failPublish: Error | undefined;
 	publishes = 0;
 
@@ -45,6 +50,9 @@ class MemoryDir implements FileLayer {
 		if (this.files.has(path)) return false;
 		this.publishes++;
 		this.files.set(path, content);
+		const after = this.afterPublish;
+		this.afterPublish = undefined;
+		after?.();
 		return true;
 	}
 
@@ -53,11 +61,50 @@ class MemoryDir implements FileLayer {
 	}
 }
 
-function store(dir: MemoryDir): CalibrationStore {
-	const result = new CalibrationStore(DIR, dir);
+function store(dir: MemoryDir, clock?: () => number): CalibrationStore {
+	const result = clock ? new CalibrationStore(DIR, dir, clock) : new CalibrationStore(DIR, dir);
 	result.load();
 	return result;
 }
+
+describe("CalibrationStore on a real directory", () => {
+	it("republishes a sample whose creation hit a reused version number (writer paused across several publishes)", () => {
+		const root = mkdtempSync(join(tmpdir(), "pi-tps-calibration-"));
+		const dir = join(root, "pi-tps-calibration");
+		try {
+			let pause: (() => void) | undefined;
+			const pausing: FileLayer = {
+				read: (path) => nodeFiles.read(path),
+				list: (path) => nodeFiles.list(path),
+				remove: (path) => nodeFiles.remove(path),
+				publish: (path, content) => {
+					const hook = pause;
+					pause = undefined;
+					hook?.();
+					return nodeFiles.publish(path, content);
+				},
+			};
+			const seed = new CalibrationStore(dir, nodeFiles);
+			seed.load();
+			seed.update("p/seed", { reported: 100, estimated: 100 }, 0);
+			const paused = new CalibrationStore(dir, pausing);
+			paused.load();
+			const other = new CalibrationStore(dir, nodeFiles);
+			other.load();
+			pause = () => {
+				for (let i = 0; i < 4; i++) other.update("p/b", { reported: 100 + i, estimated: 100 }, i);
+			};
+			paused.update("p/a", { reported: 200, estimated: 100 }, 10);
+			const restored = new CalibrationStore(dir, nodeFiles);
+			restored.load();
+			expect(restored.entry("p/a")).toEqual({ ratio: 2, samples: 1, updatedAt: 10 });
+			expect(restored.entry("p/b")?.samples).toBe(4);
+			expect(restored.ratio("p/seed")).toBe(1);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("calibrationKey", () => {
 	it("joins provider and model", () => {
@@ -183,6 +230,114 @@ describe("CalibrationStore", () => {
 		expect(restored.ratio("x/mine")).toBe(1.25);
 		expect(dir.files.has(version(2))).toBe(true);
 		expect(mine.ratio("x/other")).toBe(1.5);
+		expect(restored.entry("x/mine")?.samples).toBe(1);
+		expect(restored.entry("x/other")?.samples).toBe(1);
+	});
+
+	it("republishes a sample whose creation hit a reused version number (writer paused across several publishes)", () => {
+		const dir = new MemoryDir();
+		dir.files.set(version(1), file({}));
+		const paused = store(dir);
+		const other = store(dir);
+		// Inside the paused session's creation of version 2, the other session publishes versions 2 to 5 and
+		// removes versions 1 and 2, so the paused creation of version 2 succeeds on a reused number.
+		dir.beforePublish = () => {
+			for (let i = 0; i < 4; i++) other.update("p/b", { reported: 100 + i, estimated: 100 }, i);
+		};
+		expect(paused.update("p/a", { reported: 200, estimated: 100 }, 10)).toBeUndefined();
+		const restored = store(dir);
+		expect(restored.entry("p/a")).toEqual({ ratio: 2, samples: 1, updatedAt: 10 });
+		expect(restored.entry("p/b")?.samples).toBe(4);
+		expect(paused.flush()).toBeUndefined();
+		expect(store(dir).entry("p/a")?.samples).toBe(1);
+	});
+
+	it.each([512, 513, 1025])("stores a backlog of %i samples exactly once (large backlog)", (count) => {
+		const dir = new MemoryDir();
+		const calibration = store(dir);
+		dir.failPublish = new Error("EIO");
+		for (let i = 0; i < count; i++) {
+			calibration.update("p/m", { reported: i === 0 ? 400 : 100, estimated: 100 }, i);
+		}
+		const expected = calibration.entry("p/m");
+		expect(expected?.samples).toBe(count);
+		dir.failPublish = undefined;
+		expect(calibration.flush()).toBeUndefined();
+		const restored = store(dir).entry("p/m");
+		expect(restored).toEqual(expected);
+		expect(restored?.updatedAt).toBe(count - 1);
+		expect(restored?.ratio).toBeCloseTo(1, 5);
+	});
+
+	it("finds its sample stored after pausing past 512 other samples (pause after publishing)", () => {
+		const dir = new MemoryDir();
+		const paused = store(dir);
+		const other = store(dir);
+		dir.afterPublish = () => {
+			for (let i = 0; i < 512; i++) other.update("p/b", { reported: 100, estimated: 100 }, i);
+		};
+		expect(paused.update("p/a", { reported: 200, estimated: 100 }, 1)).toBeUndefined();
+		paused.flush();
+		const restored = store(dir);
+		expect(restored.entry("p/a")?.samples).toBe(1);
+		expect(restored.entry("p/b")?.samples).toBe(512);
+	});
+
+	it("removes the records of sessions gone for more than 7 days (crashed session)", () => {
+		const now = 1_000 * WRITER_RETENTION_MS;
+		const dir = new MemoryDir();
+		const crashed = JSON.stringify({
+			version: 1,
+			models: {},
+			writers: { crashed: { seq: 3, at: now - WRITER_RETENTION_MS - 86_400_000 }, recent: { seq: 1, at: now - 1000 } },
+		});
+		dir.files.set(version(1), crashed);
+		store(dir, () => now).update("p/m", { reported: 100, estimated: 100 }, 1);
+		const writers = Object.keys(JSON.parse(dir.files.get(version(2)) ?? "{}").writers);
+		expect(writers).not.toContain("crashed");
+		expect(writers).toContain("recent");
+		expect(writers).toHaveLength(2);
+	});
+
+	it("drops samples it can no longer prove unstored instead of applying them twice (session paused beyond the retention)", () => {
+		let now = 1_000 * WRITER_RETENTION_MS;
+		const clock = () => now;
+		const dir = new MemoryDir();
+		const paused = store(dir, clock);
+		const other = store(dir, clock);
+		dir.afterPublish = () => {
+			now += WRITER_RETENTION_MS + 86_400_000;
+			other.update("p/b", { reported: 100, estimated: 100 }, 2);
+		};
+		paused.update("p/a", { reported: 200, estimated: 100 }, 1);
+		const restored = store(dir, clock);
+		expect(restored.entry("p/a")?.samples).toBe(1);
+		expect(restored.entry("p/b")?.samples).toBe(1);
+		paused.update("p/a", { reported: 200, estimated: 100 }, 3);
+		expect(store(dir, clock).entry("p/a")?.samples).toBe(2);
+	});
+
+	it("removes its own record when the session closes", () => {
+		const dir = new MemoryDir();
+		const calibration = store(dir);
+		calibration.update("p/m", { reported: 100, estimated: 100 }, 1);
+		const newest = () => {
+			const name = dir.list(DIR).sort().at(-1) ?? "";
+			return JSON.parse(dir.files.get(join(DIR, name)) ?? "{}");
+		};
+		expect(Object.keys(newest().writers)).toHaveLength(1);
+		expect(calibration.close()).toBeUndefined();
+		expect(Object.keys(newest().writers)).toHaveLength(0);
+		expect(newest().models["p/m"].samples).toBe(1);
+	});
+
+	it("never applies a stored sample twice when it retries", () => {
+		const dir = new MemoryDir();
+		const mine = store(dir);
+		mine.update("p/a", { reported: 200, estimated: 100 }, 1);
+		mine.flush();
+		mine.update("p/a", { reported: 200, estimated: 100 }, 2);
+		expect(store(dir).entry("p/a")?.samples).toBe(2);
 	});
 
 	it("applies an unpublished sample on top of another session's sample for the same model", () => {
