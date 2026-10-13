@@ -2,3 +2,7 @@
   dir: packages/pi-tps
   intents:
     - good-knives-boil
+"@zeroclover/pi-tps@0.1.1":
+  dir: packages/pi-tps
+  intents:
+    - clever-fishes-bow

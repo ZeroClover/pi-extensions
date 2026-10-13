@@ -1,5 +1,11 @@
 # @zeroclover/pi-tps
 
+## 0.1.1
+
+### Patch Changes
+
+- The README's license link now opens the license on npmjs.com and in installed copies of the package; it pointed outside the package before.
+
 ## 0.1.0
 
 ### Minor Changes
