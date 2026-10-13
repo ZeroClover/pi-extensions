@@ -53,7 +53,15 @@ The symbol style SHALL mark every field with one single-cell, non-emoji symbol, 
 
 #### Scenario: Uncalibrated live figure
 - **WHEN** the active model has no calibration ratio and live TPS is 48.6
-- **THEN** the text style shows `TPS ~48.6 tok/s` and the symbol style `»~48.6/s`
+- **THEN** the text style shows `TPS ~48.6 tok/s · TTFT 1.2s · out ~1.2K` and the symbol style `»~48.6/s ⇥1.2s ↓~1.2K`
+
+#### Scenario: Uncalibrated warm-up
+- **WHEN** the active model has no calibration ratio and live TPS is not yet available
+- **THEN** the estimated counts still carry the marker: `TPS — · TTFT 0.7s · out ~10 · think ~30`
+
+#### Scenario: Estimated summary
+- **WHEN** a burst-only run's output tokens come from the estimate because the provider reported no usage
+- **THEN** the summary shows `burst ~225.0 tok/s` and `out ~900`; a TPS is marked only when a request contributing to it relied on the estimate, and token counts only when a record behind them did
 
 ### Requirement: Readout phases
 The readout SHALL have five phases: idle (no run active), waiting (request sent, no token yet), streaming (deltas arriving), working (run active between requests) and the idle summary. Waiting and streaming SHALL show the request number when the run has more than one request; working SHALL show no rate.

@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	CalibrationStore,
@@ -9,45 +10,53 @@ import {
 } from "../src/calibration.ts";
 import type { FileLayer } from "../src/files.ts";
 
-const PATH = "/agent/pi-tps-calibration.json";
+const DIR = "/agent/pi-tps-calibration";
 
-interface MemoryFiles extends FileLayer {
-	content: string | undefined;
-	writes: number;
-	locked: boolean;
-	/** Runs once inside the next write, before the content changes: lets a test interleave another session. */
-	beforeWrite: (() => void) | undefined;
+function version(n: number): string {
+	return join(DIR, `${String(n).padStart(10, "0")}.json`);
 }
 
-function memoryFiles(initial?: string): MemoryFiles {
-	const files: MemoryFiles = {
-		content: initial,
-		writes: 0,
-		locked: false,
-		beforeWrite: undefined,
-		read: () => files.content,
-		write: (_path, content) => {
-			const hook = files.beforeWrite;
-			files.beforeWrite = undefined;
-			hook?.();
-			files.writes++;
-			files.content = content;
-		},
-		lock: () => {
-			if (files.locked) return undefined;
-			files.locked = true;
-			return () => {
-				files.locked = false;
-			};
-		},
-	};
-	return files;
+function file(models: Record<string, { ratio: number; samples: number; updatedAt: number }>): string {
+	return JSON.stringify({ version: 1, models });
 }
 
-function ratioOnDisk(files: MemoryFiles, key: string): number | undefined {
-	const store = new CalibrationStore(PATH, files);
-	store.load();
-	return store.ratio(key);
+/** An in-memory directory. `beforePublish` runs once inside the next publish, before the exclusive check. */
+class MemoryDir implements FileLayer {
+	readonly files = new Map<string, string>();
+	beforePublish: (() => void) | undefined;
+	failPublish: Error | undefined;
+	publishes = 0;
+
+	read(path: string): string | undefined {
+		return this.files.get(path);
+	}
+
+	list(dir: string): string[] {
+		return [...this.files.keys()]
+			.filter((path) => path.startsWith(`${dir}/`))
+			.map((path) => path.slice(dir.length + 1));
+	}
+
+	publish(path: string, content: string): boolean {
+		const hook = this.beforePublish;
+		this.beforePublish = undefined;
+		hook?.();
+		if (this.failPublish) throw this.failPublish;
+		if (this.files.has(path)) return false;
+		this.publishes++;
+		this.files.set(path, content);
+		return true;
+	}
+
+	remove(path: string): void {
+		this.files.delete(path);
+	}
+}
+
+function store(dir: MemoryDir): CalibrationStore {
+	const result = new CalibrationStore(DIR, dir);
+	result.load();
+	return result;
 }
 
 describe("calibrationKey", () => {
@@ -88,9 +97,8 @@ describe("nextEntry", () => {
 	});
 
 	it("clamps an outlier sample before averaging it into an existing ratio", () => {
-		expect(nextEntry({ ratio: 1, samples: 3, updatedAt: 0 }, { reported: 900, estimated: 100 }, 1).ratio).toBeCloseTo(
-			1.9,
-		);
+		const entry = nextEntry({ ratio: 1, samples: 3, updatedAt: 0 }, { reported: 900, estimated: 100 }, 1);
+		expect(entry.ratio).toBeCloseTo(1.9);
 	});
 });
 
@@ -111,141 +119,131 @@ describe("parseCalibration", () => {
 				models: { "a/b": { ratio: 1.1, samples: 2, updatedAt: 5 }, "c/d": { ratio: "x" } },
 			}),
 		);
+		expect(parsed.usable).toBe(true);
 		expect(parsed.models.get("a/b")?.ratio).toBe(1.1);
 		expect(parsed.models.has("c/d")).toBe(false);
 		expect(parsed.warning).toContain("1 invalid entry");
 	});
+
+	it("marks unparseable content unusable", () => {
+		expect(parseCalibration("{not json").usable).toBe(false);
+		expect(parseCalibration(JSON.stringify({ version: 2, models: {} })).usable).toBe(false);
+	});
 });
 
 describe("CalibrationStore", () => {
-	it("treats a missing file as empty without warning", () => {
-		const store = new CalibrationStore(PATH, memoryFiles());
-		expect(store.load()).toBeUndefined();
-		expect(store.ratio("a/b")).toBeUndefined();
+	it("treats a missing directory as empty without warning", () => {
+		const calibration = new CalibrationStore(DIR, new MemoryDir());
+		expect(calibration.load()).toBeUndefined();
+		expect(calibration.ratio("a/b")).toBeUndefined();
 	});
 
-	it("starts empty with one warning on a corrupt file", () => {
-		const store = new CalibrationStore(PATH, memoryFiles("{not json"));
-		const warning = store.load();
+	it("publishes numbered versions that a new session restores (restart)", () => {
+		const dir = new MemoryDir();
+		expect(store(dir).update("a/b", { reported: 1000, estimated: 800 }, 7)).toBeUndefined();
+		expect(dir.files.has(version(1))).toBe(true);
+		expect(store(dir).entry("a/b")).toEqual({ ratio: 1.25, samples: 1, updatedAt: 7 });
+	});
+
+	it("uses the newest valid version when the newest is corrupt, and publishes past it (corrupt file)", () => {
+		const dir = new MemoryDir();
+		dir.files.set(version(1), file({ "a/b": { ratio: 1.5, samples: 1, updatedAt: 1 } }));
+		dir.files.set(version(2), "{not json");
+		const calibration = new CalibrationStore(DIR, dir);
+		const warning = calibration.load();
 		expect(warning).toContain("invalid JSON");
-		expect(warning).toContain(PATH);
-		expect(store.ratio("a/b")).toBeUndefined();
+		expect(warning).toContain(version(2));
+		expect(calibration.ratio("a/b")).toBe(1.5);
+		calibration.update("c/d", { reported: 100, estimated: 100 }, 2);
+		expect(dir.files.has(version(3))).toBe(true);
 	});
 
-	it("warns when the file cannot be read", () => {
-		const files: FileLayer = {
-			read: () => {
-				throw new Error("EACCES");
-			},
-			write: () => {},
-			lock: () => () => {},
-		};
-		expect(new CalibrationStore(PATH, files).load()).toContain("EACCES");
-	});
-
-	it("persists updates and restores them in a new store", () => {
-		const files = memoryFiles();
-		const store = new CalibrationStore(PATH, files);
-		store.load();
-		expect(store.update("a/b", { reported: 1000, estimated: 800 }, 7)).toBeUndefined();
-		const restored = new CalibrationStore(PATH, files);
-		expect(restored.load()).toBeUndefined();
-		expect(restored.ratio("a/b")).toBe(1.25);
-		expect(restored.entry("a/b")).toEqual({ ratio: 1.25, samples: 1, updatedAt: 7 });
-	});
-
-	it("keeps entries written by another session in the meantime", () => {
-		const files = memoryFiles();
-		const mine = new CalibrationStore(PATH, files);
-		const other = new CalibrationStore(PATH, files);
-		mine.load();
-		other.load();
-		other.update("x/other", { reported: 900, estimated: 600 }, 1);
-		mine.update("x/mine", { reported: 1000, estimated: 800 }, 2);
-		expect(ratioOnDisk(files, "x/other")).toBe(1.5);
-		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
-	});
-
-	it("does not lose an update made while another session holds the file (concurrent sessions)", () => {
-		const files = memoryFiles();
-		const mine = new CalibrationStore(PATH, files);
-		const other = new CalibrationStore(PATH, files);
-		mine.load();
-		other.load();
-		// While mine is inside its locked read-merge-write, other tries to update a different key.
-		files.beforeWrite = () => other.update("x/other", { reported: 900, estimated: 600 }, 1);
-		mine.update("x/mine", { reported: 1000, estimated: 800 }, 2);
-		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
-		// Other kept its sample in memory and writes it with its next update.
-		other.update("x/third", { reported: 600, estimated: 600 }, 3);
-		expect(ratioOnDisk(files, "x/other")).toBe(1.5);
-		expect(ratioOnDisk(files, "x/mine")).toBe(1.25);
-		expect(ratioOnDisk(files, "x/third")).toBe(1);
-	});
-
-	it("builds on another session's ratio for the same key", () => {
-		const files = memoryFiles();
-		const mine = new CalibrationStore(PATH, files);
-		const other = new CalibrationStore(PATH, files);
-		mine.load();
-		other.load();
-		other.update("x/m", { reported: 200, estimated: 100 }, 1);
-		mine.update("x/m", { reported: 100, estimated: 100 }, 2);
-		const restored = new CalibrationStore(PATH, files);
-		restored.load();
-		expect(restored.entry("x/m")).toEqual({ ratio: 1.7, samples: 2, updatedAt: 2 });
-	});
-
-	it("keeps converging in memory when the file is readable but unwritable", () => {
-		const files = memoryFiles(
-			JSON.stringify({ version: 1, models: { "x/m": { ratio: 1, samples: 1, updatedAt: 0 } } }),
-		);
-		files.write = () => {
-			throw new Error("EROFS");
-		};
-		const store = new CalibrationStore(PATH, files);
-		store.load();
-		const ratios: number[] = [];
-		for (let i = 1; i <= 3; i++) {
-			store.update("x/m", { reported: 200, estimated: 100 }, i);
-			ratios.push(store.ratio("x/m") ?? 0);
-		}
-		expect(ratios[0]).toBeCloseTo(1.3);
-		expect(ratios[1]).toBeCloseTo(1.51);
-		expect(ratios[2]).toBeCloseTo(1.657);
-		expect(store.entry("x/m")?.samples).toBe(4);
-	});
-
-	it("warns once when the lock cannot be created", () => {
-		const files = memoryFiles();
-		files.lock = () => {
+	it("warns when the directory cannot be read", () => {
+		const dir = new MemoryDir();
+		dir.list = () => {
 			throw new Error("EACCES");
 		};
-		const store = new CalibrationStore(PATH, files);
-		expect(store.update("x/m", { reported: 200, estimated: 100 }, 1)).toContain("EACCES");
-		expect(store.update("x/m", { reported: 200, estimated: 100 }, 2)).toBeUndefined();
-		expect(store.ratio("x/m")).toBeCloseTo(2);
+		expect(new CalibrationStore(DIR, dir).load()).toContain("EACCES");
 	});
 
 	it("ignores samples below the minimum estimate", () => {
-		const files = memoryFiles();
-		const store = new CalibrationStore(PATH, files);
-		store.update("a/b", { reported: 30, estimated: 20 }, 0);
-		expect(store.ratio("a/b")).toBeUndefined();
-		expect(files.writes).toBe(0);
+		const dir = new MemoryDir();
+		store(dir).update("a/b", { reported: 30, estimated: 20 }, 0);
+		expect(dir.publishes).toBe(0);
 	});
 
-	it("warns once when the file is unwritable and keeps calibrating in memory", () => {
-		const files: FileLayer = {
-			read: () => undefined,
-			write: () => {
-				throw new Error("EROFS");
-			},
-			lock: () => () => {},
-		};
-		const store = new CalibrationStore(PATH, files);
-		expect(store.update("a/b", { reported: 1000, estimated: 800 }, 0)).toContain("EROFS");
-		expect(store.update("a/b", { reported: 1000, estimated: 1000 }, 1)).toBeUndefined();
-		expect(store.ratio("a/b")).toBeLessThan(1.25);
+	it("keeps both updates when another session publishes first (concurrent sessions)", () => {
+		const dir = new MemoryDir();
+		const mine = store(dir);
+		const other = store(dir);
+		dir.beforePublish = () => other.update("x/other", { reported: 900, estimated: 600 }, 1);
+		mine.update("x/mine", { reported: 1000, estimated: 800 }, 2);
+		const restored = store(dir);
+		expect(restored.ratio("x/other")).toBe(1.5);
+		expect(restored.ratio("x/mine")).toBe(1.25);
+		expect(dir.files.has(version(2))).toBe(true);
+		expect(mine.ratio("x/other")).toBe(1.5);
+	});
+
+	it("applies an unpublished sample on top of another session's sample for the same model", () => {
+		const dir = new MemoryDir();
+		dir.files.set(version(1), file({ "p/m": { ratio: 1, samples: 1, updatedAt: 0 } }));
+		const mine = store(dir);
+		const other = store(dir);
+		dir.failPublish = new Error("EIO");
+		expect(mine.update("p/m", { reported: 200, estimated: 100 }, 1)).toContain("EIO");
+		dir.failPublish = undefined;
+		other.update("p/m", { reported: 300, estimated: 100 }, 2);
+		expect(store(dir).entry("p/m")).toEqual({ ratio: 1.6, samples: 2, updatedAt: 2 });
+		mine.update("q/n", { reported: 100, estimated: 100 }, 3);
+		const restored = store(dir);
+		expect(restored.entry("p/m")?.samples).toBe(3);
+		expect(restored.ratio("p/m")).toBeCloseTo(1.72);
+		expect(restored.ratio("q/n")).toBe(1);
+	});
+
+	it("publishes a queued sample at shutdown when no later update comes (no later update)", () => {
+		const dir = new MemoryDir();
+		const mine = store(dir);
+		dir.failPublish = new Error("EIO");
+		mine.update("a/b", { reported: 200, estimated: 100 }, 1);
+		expect(store(dir).ratio("a/b")).toBeUndefined();
+		dir.failPublish = undefined;
+		expect(mine.flush()).toBeUndefined();
+		expect(store(dir).ratio("a/b")).toBe(2);
+	});
+
+	it("keeps converging in memory and warns once when every write fails (unwritable file)", () => {
+		const dir = new MemoryDir();
+		dir.files.set(version(1), file({ "x/m": { ratio: 1, samples: 1, updatedAt: 0 } }));
+		const calibration = store(dir);
+		dir.failPublish = new Error("EROFS");
+		const warnings: (string | undefined)[] = [];
+		const ratios: number[] = [];
+		for (let i = 1; i <= 3; i++) {
+			warnings.push(calibration.update("x/m", { reported: 200, estimated: 100 }, i));
+			ratios.push(calibration.ratio("x/m") ?? 0);
+		}
+		expect(warnings.filter(Boolean)).toHaveLength(1);
+		expect(warnings[0]).toContain("EROFS");
+		expect(ratios[0]).toBeCloseTo(1.3);
+		expect(ratios[1]).toBeCloseTo(1.51);
+		expect(ratios[2]).toBeCloseTo(1.657);
+		expect(calibration.entry("x/m")?.samples).toBe(4);
+	});
+
+	it("keeps the sample queued when every publish attempt loses the race", () => {
+		const dir = new MemoryDir();
+		const calibration = store(dir);
+		dir.publish = () => false;
+		expect(calibration.update("a/b", { reported: 200, estimated: 100 }, 1)).toBeUndefined();
+		expect(calibration.ratio("a/b")).toBe(2);
+	});
+
+	it("keeps only the newest three versions", () => {
+		const dir = new MemoryDir();
+		const calibration = store(dir);
+		for (let i = 1; i <= 6; i++) calibration.update("a/b", { reported: 100 + i, estimated: 100 }, i);
+		expect(dir.list(DIR).sort()).toEqual(["0000000004.json", "0000000005.json", "0000000006.json"]);
 	});
 });

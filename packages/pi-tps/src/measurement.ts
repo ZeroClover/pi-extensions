@@ -277,7 +277,8 @@ export class Measurement {
 		const windowMs = Math.min(LIVE_WINDOW_MS, sinceFirst);
 		const start = lowerBound(request.outputAt, now - LIVE_WINDOW_MS);
 		const before = start > 0 ? (request.outputCumulative[start - 1] ?? 0) : 0;
-		const inWindow = request.rawOutput - before;
+		// Estimator corrections can be negative; a window holding mostly a correction must not show a negative rate.
+		const inWindow = Math.max(0, request.rawOutput - before);
 		return inWindow / (windowMs / 1000);
 	}
 
@@ -347,7 +348,8 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		outcome,
 		burst: burstReason !== undefined,
 		elapsedMs: round(elapsedMs, 0),
-		outputMs: round(request.outputSpanMs, 0),
+		// Rounded down so that a span below the 1 s threshold stays below it after persistence.
+		outputMs: Math.floor(request.outputSpanMs),
 		thinkingObserved,
 		estimated: reportedOutput === undefined || thinkingEstimated,
 		inputTokens: count(usage.input),
@@ -368,7 +370,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	if (outputTps !== undefined) record.outputTps = round(outputTps, 2);
 	if (thinkingTps !== undefined) record.thinkingTps = round(thinkingTps, 2);
 	if (throughputTps !== undefined) record.throughputTps = round(throughputTps, 2);
-	if (thinkingObserved) record.thinkingMs = round(request.thinkingSpanMs, 0);
+	if (thinkingObserved) record.thinkingMs = Math.floor(request.thinkingSpanMs);
 	if (thinkingTokens !== undefined) record.thinkingTokens = thinkingTokens;
 	if (reasoning !== undefined) record.reasoningTokens = reasoning;
 	if (positive(usage.cost.total)) record.cost = usage.cost.total;

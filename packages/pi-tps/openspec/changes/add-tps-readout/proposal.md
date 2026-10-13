@@ -12,7 +12,7 @@ Pi shows no generation-speed feedback while a model responds. Users cannot tell 
 - Timing on a monotonic clock: TTFT from the provider request to the first non-empty delta of any kind; separate thinking and output phases; stall detection (gaps of 500 ms or more) that is excluded from the generation-speed denominator.
 - Live tokens-per-second over a 5 s sliding window of estimated tokens, with a per-provider/model calibration ratio learned from the provider's `usage.output` at the end of each request and persisted across sessions.
 - Burst detection that marks requests delivered as a buffer flush (fake streaming) and shows end-to-end throughput with a burst marker instead of an inflated generation rate.
-- Settlement of each request at `message_end`: tokens, thinking share, elapsed time, generation TPS and cost (only when the model has a non-zero price) recomputed from the provider's usage; at `agent_settled` the run summary aggregates its requests (token-weighted TPS, mean TTFT, summed tokens, stalls and cost).
+- Settlement of each request at `message_end`: tokens, thinking share, elapsed time, generation TPS and cost (only when the model has a non-zero price) recomputed from the provider's usage; at `agent_settled` the run summary aggregates its requests (aggregate generation rate, mean TTFT, summed tokens, stalls and cost).
 - Colour of the TPS figure driven by configurable thresholds, with global defaults overridable per provider, per model, and per provider/model pair (glob patterns on the model part); values are Pi theme colour tokens or hex colours.
 - A single throttled ticker (about 100 ms) drives the spinner and number refresh while a run is active; nothing runs while idle.
 - Telemetry is persisted as one session custom entry per run (outside model context, holding the run summary and its request records, `persist: false` disables it) so the readout and the session averages survive resume, reload and `/tree` navigation. The record format is this package's own and is not shared with other TPS extensions.
@@ -37,5 +37,5 @@ _None; this is the package's first change._
 - New runtime dependency `tokenx` (heuristic token estimator, zero dependencies) declared in the package.
 - Host packages used as peer dependencies: `@earendil-works/pi-coding-agent` (events, UI, `getAgentDir`), `@earendil-works/pi-ai` (message and usage types), `@earendil-works/pi-tui` (`parseColor`, width helpers).
 - Pi events consumed: `session_start`, `session_shutdown`, `session_tree`, `agent_start`, `agent_settled`, `turn_start`, `turn_end`, `before_provider_request`, `after_provider_response`, `message_start`, `message_update`, `message_end`, `agent_end`, `model_select`.
-- Files written by the extension: `<agent-dir>/pi-tps-calibration.json`; files read: `<agent-dir>/pi-tps.json`.
+- Files written by the extension: `<agent-dir>/pi-tps-calibration/` (numbered versions); files read: `<agent-dir>/pi-tps.json`.
 - Session files gain `custom` entries with `customType: "pi-tps"`; they do not enter model context.

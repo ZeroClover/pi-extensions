@@ -84,6 +84,16 @@ describe("aggregate", () => {
 		expect(result.ttftMs).toBe(600);
 	});
 
+	it("keeps estimate provenance for burst throughput and summed tokens, separately from the TPS", () => {
+		const burstOnly = aggregate([request({ burst: true, outputTokens: 900, elapsedMs: 4000, estimated: true })]);
+		expect(burstOnly).toMatchObject({ burstTps: 225, estimated: true, tokensEstimated: true });
+		const mixed = aggregate([
+			request({ outputTokens: 400, outputMs: 2000 }),
+			request({ outputMs: 200, estimated: true }),
+		]);
+		expect(mixed).toMatchObject({ tps: 200, estimated: false, tokensEstimated: true });
+	});
+
 	it("reports burst throughput when only burst requests exist", () => {
 		const result = aggregate([
 			request({ burst: true, outputTokens: 900, elapsedMs: 4000 }),

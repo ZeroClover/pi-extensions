@@ -52,9 +52,13 @@ On `session_start` and `session_tree` the system SHALL rebuild the last run and 
 ### Requirement: Run TPS
 The run TPS SHALL be the sum of visible output tokens divided by the sum of active output spans over the run's settled, non-burst requests whose own active output span is at least 1 s, marked estimated when a contributing request relied on the estimate; when no settled request qualifies, aborted ones that qualify SHALL be used. When every request was a burst, the run SHALL report the burst throughput (summed output tokens over summed elapsed times) instead; otherwise it has no TPS.
 
-#### Scenario: Token-weighted TPS
+#### Scenario: Aggregate generation rate
 - **WHEN** a run holds requests with 1000 visible output tokens over 10 s, 300 over 2 s, and a tool call with 80 over 0.2 s
 - **THEN** the run TPS is 1300 / 12 ≈ 108.3 and the tool call does not contribute
+
+#### Scenario: Span just under one second
+- **WHEN** a request's active output span is 999.6 ms and the record is persisted and read back
+- **THEN** the request still does not contribute to the run or session TPS
 
 #### Scenario: Burst tool call and short reply
 - **WHEN** a run holds a burst tool-call request and a reply too short to measure

@@ -54,7 +54,7 @@
 ## 9. Run-level summary and label styles
 
 - [x] 9.1 Extend `src/telemetry.ts` with the versioned run record (`startedAt`, `elapsedMs`, `aborted`, `requests`), its parser, the `working` live phase, run and session snapshot shapes and the `pi-tps:run` channel; verify `test/aggregate.test.ts` round-trips a run record and skips unknown versions and foreign entries
-- [x] 9.2 Rewrite `src/aggregate.ts` around one aggregation over request records (token-weighted TPS over settled non-burst requests with the 1 s minimum, burst throughput fallback, mean TTFT over non-aborted requests, sums of tokens, stalls, thinking and cost) used for runs and sessions, plus reconstruction of the run list from entries; verify tests cover "Token-weighted TPS", "Burst and aborted requests", "Mixed runs" and the persistence-off case from spec `telemetry-history`
+- [x] 9.2 Rewrite `src/aggregate.ts` around one aggregation over request records (aggregate generation rate over settled non-burst requests with the 1 s minimum, burst throughput fallback, mean TTFT over non-aborted requests, sums of tokens, stalls, thinking and cost) used for runs and sessions, plus reconstruction of the run list from entries; verify tests cover "Token-weighted TPS", "Burst and aborted requests", "Mixed runs" and the persistence-off case from spec `telemetry-history`
 - [x] 9.3 Implement `src/run.ts` (start at the first `agent_start`, join later ones, collect records, settle with elapsed time and the aborted flag, discard runs without records) with an injected clock; verify `test/run.test.ts` covers "Tool calls", "Automatic retry after an error" and the empty run
 - [x] 9.4 Add the `labels` key to `src/config.ts`; verify `test/config.test.ts` covers "Symbol labels" and "Unknown label style"
 - [x] 9.5 Rewrite `src/format.ts` with one field layout per phase (waiting, streaming, working, run summary, session, empty) printed in the text or symbol style, and the new number and duration formatting; verify `test/format.test.ts` covers every phase in both styles and every scenario under "Label styles", "Symbol set", "Readout phases", "Summary only after the run settles" and "Number formatting"
@@ -63,6 +63,15 @@
 - [x] 9.8 Live verification in a TUI session: a prompt with tool calls shows waiting, streaming and working phases and a single summary after the run settles; both label styles render; Escape gives the aborted summary; `/reload` and `/tree` restore the last run and session figures; print and RPC modes append one `pi-tps` entry per run and send no status text; record the observed readouts in the final report
 - [x] 9.9 Run `pnpm check` from the repository root and the load smoke test; verify both pass with no new warnings
 - [x] 9.10 Expand the README into a reference for readers: what the line shows in each state, every field in both styles with the states it appears in and what it measures, the markers and colours, and one summary line explained field by field; verify each statement against `src/format.ts`, `src/aggregate.ts` and `src/run.ts`
+
+## 10. Second review fixes (REVIEW.md)
+
+- [x] 10.1 R4: round stored `outputMs` and `thinkingMs` down; verify a cross-module test (Measurement → JSON round-trip → aggregate) for spans of 999.49, 999.5, 999.99 and 1000 ms and "Span just under one second"
+- [x] 10.2 R1: keep only the last segment open and return signed increments; verify `test/estimator.test.ts` covers "Suffix changes a segment's class", "Any delta size" with exact equality (including mixed scripts and long whitespace below 512 characters) and "Over-long segment"
+- [x] 10.3 R2/R3: replace the lock with the versioned calibration store (exclusive `link` publish, retry, queued samples replayed on the newest version, prune, flush at shutdown); remove `lock` from `FileLayer`; verify `test/calibration.test.ts` covers "Concurrent sessions", "Concurrent update of one model", "No later update", "Unwritable file" and "Corrupt file", and `test/files.test.ts` the exclusive publish on a real directory
+- [x] 10.4 R5: carry estimate provenance for burst throughput and summed tokens, and mark every uncalibrated live estimate; verify a cross-module test (Measurement → RunTracker → summarizeRun → formatSnapshot) for "Estimated summary" and `test/format.test.ts` for "Uncalibrated live figure" and "Uncalibrated warm-up" in both styles
+- [x] 10.5 R6: align README and design (aborted fallback, errored requests show the working phase, "aggregate generation rate" instead of "token-weighted", live window includes pauses, calibration directory); verify every statement against the code
+- [x] 10.6 Run `pnpm check`, the load smoke test and a live TUI run (tool calls, Escape, `/reload`) and two concurrent print sessions writing calibration; verify the newest calibration version holds both models
 
 ## Workflow follow-up
 

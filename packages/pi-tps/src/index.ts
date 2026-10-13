@@ -6,7 +6,7 @@ import {
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
 import { runsFromEntries, summarizeRun, summarizeSession } from "./aggregate.ts";
-import { CALIBRATION_FILE_NAME, CalibrationStore, calibrationKey, calibrationKeys } from "./calibration.ts";
+import { CALIBRATION_DIR_NAME, CalibrationStore, calibrationKey, calibrationKeys } from "./calibration.ts";
 import { monotonicClock } from "./clock.ts";
 import { parseTpsCommand, TPS_USAGE, tpsCompletions } from "./command.ts";
 import { CONFIG_FILE_NAME, parseConfig, resolveThresholds, type Threshold, type TpsConfig } from "./config.ts";
@@ -126,7 +126,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 		const agentDir = getAgentDir();
 		const { config, warnings } = loadConfig(join(agentDir, CONFIG_FILE_NAME));
-		const calibration = new CalibrationStore(join(agentDir, CALIBRATION_FILE_NAME), nodeFiles);
+		const calibration = new CalibrationStore(join(agentDir, CALIBRATION_DIR_NAME), nodeFiles);
 		const calibrationWarning = calibration.load();
 		if (calibrationWarning) warnings.push(calibrationWarning);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
@@ -162,6 +162,9 @@ export default function (pi: ExtensionAPI): void {
 		rt.meter.reset();
 		rt.run.discard();
 		rt.unsubscribeRequest();
+		// Samples that lost a publish race or hit a write failure get a last chance.
+		const warning = rt.calibration.flush();
+		if (warning) ctx.ui.notify(warning, "warning");
 		if (rt.tui) ctx.ui.setStatus(STATUS_KEY, undefined);
 		pi.events.emit(STATUS_CHANNEL, null);
 	});

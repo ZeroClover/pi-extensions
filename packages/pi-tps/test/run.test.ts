@@ -47,7 +47,13 @@ describe("RunTracker", () => {
 		expect(tracker.start(1_700_000_000_000)).toBe(true);
 		tracker.add(request(100));
 		clock.t = 5000;
-		expect(tracker.snapshot()).toEqual({ phase: "working", elapsedMs: 4900, requests: 1, outputTokens: 100 });
+		expect(tracker.snapshot()).toEqual({
+			phase: "working",
+			elapsedMs: 4900,
+			requests: 1,
+			outputTokens: 100,
+			estimated: false,
+		});
 		tracker.add(request(200, 50));
 		tracker.add(request(300));
 		clock.t = 18_500;

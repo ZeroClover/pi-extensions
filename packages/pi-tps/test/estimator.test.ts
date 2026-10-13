@@ -73,21 +73,53 @@ describe("StreamEstimator", () => {
 	});
 });
 
-describe("StreamEstimator chunk stability", () => {
-	const samples: [string, string][] = [
-		["a long digit run", "1234567890".repeat(100)],
-		["a long identifier", "someVeryLongIdentifierName_".repeat(40)],
-		["a punctuation run", "-=*#".repeat(150)],
+describe("StreamEstimator chunk stability (any delta size)", () => {
+	const exact: [string, string][] = [
 		["English prose", ENGLISH.repeat(3)],
-		["Chinese prose", CHINESE.repeat(3)],
+		["Chinese prose with ASCII punctuation", `${CHINESE}. `.repeat(3)],
 		["JSON tool arguments", TOOL_ARGUMENTS.repeat(5)],
+		["identifiers", "someVeryLongIdentifierName_value.other_name(x) ".repeat(20)],
+		["mixed scripts", "abc中文def 123日本語 ünïcödé ".repeat(15)],
+		["a digit run with a BigInt suffix", "12345678901234567890n"],
+		["a 500-digit run with a suffix", `${"1".repeat(500)}n`],
+		["long whitespace", `a${"\n".repeat(500)}b${" ".repeat(400)}c`],
+		["punctuation runs", "-=*#".repeat(120)],
 	];
 
-	it.each(samples)("keeps %s within 2 %% of the whole-text estimate for any delta size", (_name, text) => {
+	it.each(exact)("matches the whole-text estimate exactly for %s", (_name, text) => {
 		const whole = estimateTokens(text);
 		for (const size of [1, 2, 3, 4, 7, 16, 128, 1000]) {
-			const total = streamed(chunks(text, size));
-			expect(Math.abs(total - whole)).toBeLessThanOrEqual(Math.max(2, whole * 0.02));
+			expect(streamed(chunks(text, size))).toBe(whole);
+		}
+	});
+
+	it("matches the estimate of the text so far after every delta (suffix changes a segment's class)", () => {
+		const estimator = new StreamEstimator();
+		const text = "12345678901234567890n";
+		let total = 0;
+		const increments: number[] = [];
+		for (let i = 0; i < text.length; i++) {
+			const increment = estimator.add(text.charAt(i));
+			increments.push(increment);
+			total += increment;
+			expect(total).toBe(estimateTokens(text.slice(0, i + 1)));
+		}
+		expect(total).toBe(3);
+		expect(increments.at(-1)).toBeLessThan(0);
+	});
+
+	it("estimates an over-long segment in pieces of at most 256 characters", () => {
+		const text = "\n".repeat(1800);
+		const pieces = Math.ceil(1800 / 256);
+		expect(streamed(chunks(text, 1))).toBeGreaterThanOrEqual(pieces - 1);
+		expect(streamed(chunks(text, 1))).toBe(streamed(chunks(text, 128)));
+	});
+
+	it("keeps long uniform runs close to the whole-text estimate", () => {
+		const text = "1234567890".repeat(100);
+		const whole = estimateTokens(text);
+		for (const size of [1, 4, 128]) {
+			expect(Math.abs(streamed(chunks(text, size)) - whole)).toBeLessThanOrEqual(Math.max(2, whole * 0.02));
 		}
 	});
 });

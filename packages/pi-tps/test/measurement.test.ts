@@ -230,6 +230,18 @@ describe("live output TPS", () => {
 		expect(meter.snapshot()?.calibrated).toBe(false);
 	});
 
+	it("never shows a negative live rate when the window holds an estimator correction", () => {
+		const corrections = [5, 5, 5, -12];
+		meter = new Measurement(clock, () => ({ add: () => corrections.shift() ?? 0 }));
+		start();
+		for (const at of [0, 1000, 2000, 7500]) {
+			clock.t = at;
+			meter.delta("text", "x");
+		}
+		clock.t = 8000;
+		expect(meter.snapshot()?.liveTps).toBe(0);
+	});
+
 	it("does not re-estimate earlier deltas (long stream)", () => {
 		start();
 		stream("text", 0, 5000, 10, 1);

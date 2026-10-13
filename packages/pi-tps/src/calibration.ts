@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
 	CALIBRATION_ALPHA,
 	CALIBRATION_MAX_RATIO,
@@ -6,7 +7,8 @@ import {
 } from "./constants.ts";
 import { errorMessage, type FileLayer } from "./files.ts";
 
-export const CALIBRATION_FILE_NAME = "pi-tps-calibration.json";
+/** Directory of the calibration versions inside Pi's agent directory. */
+export const CALIBRATION_DIR_NAME = "pi-tps-calibration";
 
 export interface CalibrationEntry {
 	ratio: number;
@@ -81,68 +83,100 @@ function parseEntry(value: unknown): CalibrationEntry | undefined {
 
 const UNSUPPORTED_FORMAT = "unsupported format, expected { version: 1, models: {...} }";
 
-/** Parses the calibration file. Unusable content yields an empty store and a warning. */
-export function parseCalibration(text: string): { models: Map<string, CalibrationEntry>; warning?: string } {
+/**
+ * Parses one calibration version. `usable` is false when the content cannot be used at all; individual invalid
+ * entries are skipped with a warning.
+ */
+export function parseCalibration(text: string): {
+	models: Map<string, CalibrationEntry>;
+	usable: boolean;
+	warning?: string;
+} {
 	const models = new Map<string, CalibrationEntry>();
 	let json: unknown;
 	try {
 		json = JSON.parse(text);
 	} catch (error) {
-		return { models, warning: `invalid JSON (${errorMessage(error)})` };
+		return { models, usable: false, warning: `invalid JSON (${errorMessage(error)})` };
 	}
-	if (!isRecord(json)) return { models, warning: UNSUPPORTED_FORMAT };
+	if (!isRecord(json)) return { models, usable: false, warning: UNSUPPORTED_FORMAT };
 	const { version, models: entries } = json;
-	if (version !== 1 || !isRecord(entries)) return { models, warning: UNSUPPORTED_FORMAT };
+	if (version !== 1 || !isRecord(entries)) return { models, usable: false, warning: UNSUPPORTED_FORMAT };
 	let skipped = 0;
 	for (const [key, value] of Object.entries(entries)) {
 		const entry = parseEntry(value);
 		if (entry) models.set(key, entry);
 		else skipped++;
 	}
-	if (skipped > 0) return { models, warning: `skipped ${skipped} invalid entr${skipped === 1 ? "y" : "ies"}` };
-	return { models };
+	if (skipped > 0) {
+		return { models, usable: true, warning: `skipped ${skipped} invalid entr${skipped === 1 ? "y" : "ies"}` };
+	}
+	return { models, usable: true };
+}
+
+const VERSION_NAME = /^(\d{10})\.json$/;
+/** Versions kept after a publish, so a reader that listed the directory a moment ago still finds its file. */
+const KEPT_VERSIONS = 3;
+/** Publish attempts per flush; each lost race means another session published in between. */
+const PUBLISH_ATTEMPTS = 5;
+
+function versionName(version: number): string {
+	return `${String(version).padStart(10, "0")}.json`;
+}
+
+interface PendingSample {
+	key: string;
+	sample: CalibrationSample;
+	at: number;
+}
+
+interface Snapshot {
+	/** Highest version number present, also when its file is unusable, so the next publish goes past it. */
+	version: number;
+	models: Map<string, CalibrationEntry>;
+	warning?: string;
+}
+
+function replay(base: ReadonlyMap<string, CalibrationEntry>, samples: readonly PendingSample[]) {
+	const models = new Map(base);
+	for (const { key, sample, at } of samples) models.set(key, nextEntry(models.get(key), sample, at));
+	return models;
 }
 
 /**
- * Calibration ratios per `<provider>/<model>`, persisted in one JSON file. Methods return warning texts instead
- * of reporting them so the caller can use the context of the event it is handling.
+ * Calibration ratios per `<provider>/<model>`, shared by every Pi session through numbered versions in one
+ * directory. An update publishes the next version, derived from the newest one, with an exclusive and atomic file
+ * creation; a session that loses the race re-reads and tries again, so no session overwrites or reverts another's
+ * samples, and no lock is needed. Samples that could not be published yet stay queued as samples and are applied on
+ * top of the newest version, both for this session's ratios and for the next publish.
+ *
+ * Methods return warning texts instead of reporting them so the caller can use the context of its event.
  */
 export class CalibrationStore {
+	private published = new Map<string, CalibrationEntry>();
+	private pending: PendingSample[] = [];
 	private models = new Map<string, CalibrationEntry>();
-	/** Keys updated in memory but not yet written; they win over the disk copy until a write succeeds. */
-	private readonly unsaved = new Set<string>();
 	private writeWarned = false;
 
 	constructor(
-		private readonly path: string,
+		private readonly dir: string,
 		private readonly files: FileLayer,
 	) {}
 
-	/** Replaces the in-memory ratios with the file content. A missing file is an empty store. */
+	/** Reads the newest version. A missing directory is an empty store. */
 	load(): string | undefined {
-		this.models = new Map();
-		let text: string | undefined;
+		this.pending = [];
+		let snapshot: Snapshot;
 		try {
-			text = this.files.read(this.path);
+			snapshot = this.readNewest();
 		} catch (error) {
-			return `pi-tps: cannot read ${this.path}: ${errorMessage(error)}; calibration starts empty`;
+			this.published = new Map();
+			this.models = new Map();
+			return `pi-tps: cannot read ${this.dir}: ${errorMessage(error)}; calibration starts empty`;
 		}
-		if (text === undefined) return undefined;
-		const parsed = parseCalibration(text);
-		this.models = parsed.models;
-		return parsed.warning === undefined ? undefined : `pi-tps: ${this.path}: ${parsed.warning}`;
-	}
-
-	/** The file's entries, or undefined when it is missing or unusable (already reported by {@link load}). */
-	private readQuietly(): Map<string, CalibrationEntry> | undefined {
-		try {
-			const text = this.files.read(this.path);
-			if (text === undefined) return undefined;
-			const parsed = parseCalibration(text);
-			return parsed.warning === undefined ? parsed.models : undefined;
-		} catch {
-			return undefined;
-		}
+		this.published = snapshot.models;
+		this.models = new Map(snapshot.models);
+		return snapshot.warning === undefined ? undefined : `pi-tps: ${snapshot.warning}`;
 	}
 
 	ratio(key: string): number | undefined {
@@ -153,52 +187,88 @@ export class CalibrationStore {
 		return this.models.get(key);
 	}
 
-	/**
-	 * Applies one sample and writes the file inside a cross-process lock: the file is re-read and merged first, so
-	 * concurrent sessions neither lose updates nor build on stale ratios. Returns a warning the first time writing
-	 * fails; the in-memory ratios then stay authoritative for the session.
-	 */
+	/** Applies one sample and publishes it. Returns a warning the first time writing fails. */
 	update(key: string, sample: CalibrationSample, now: number): string | undefined {
 		if (!isCalibratable(sample)) return undefined;
-		let release: (() => void) | undefined;
-		try {
-			release = this.files.lock(this.path);
-		} catch (error) {
-			this.applyInMemory(key, sample, now);
-			return this.writeFailure(error);
-		}
-		if (!release) {
-			// Another session holds the file; keep the sample and write it with the next update.
-			this.applyInMemory(key, sample, now);
-			return undefined;
-		}
-		try {
-			const onDisk = this.readQuietly();
-			if (onDisk) {
-				for (const [diskKey, entry] of onDisk) if (!this.unsaved.has(diskKey)) this.models.set(diskKey, entry);
-			}
-			this.applyInMemory(key, sample, now);
-			const file: CalibrationFile = { version: 1, models: Object.fromEntries(this.models) };
+		this.pending.push({ key, sample, at: now });
+		this.models = replay(this.published, this.pending);
+		return this.flush();
+	}
+
+	/** Publishes the queued samples on top of the newest version; called after each update and at shutdown. */
+	flush(): string | undefined {
+		for (let attempt = 0; attempt < PUBLISH_ATTEMPTS && this.pending.length > 0; attempt++) {
+			let snapshot: Snapshot;
 			try {
-				this.files.write(this.path, `${JSON.stringify(file, null, "\t")}\n`);
+				snapshot = this.readNewest();
 			} catch (error) {
 				return this.writeFailure(error);
 			}
-			this.unsaved.clear();
-			return undefined;
-		} finally {
-			release();
+			const next = replay(snapshot.models, this.pending);
+			this.published = snapshot.models;
+			this.models = next;
+			const file: CalibrationFile = { version: 1, models: Object.fromEntries(next) };
+			const version = snapshot.version + 1;
+			try {
+				if (!this.files.publish(this.path(version), `${JSON.stringify(file, null, "\t")}\n`)) continue;
+			} catch (error) {
+				return this.writeFailure(error);
+			}
+			this.published = next;
+			this.pending = [];
+			try {
+				this.prune(version);
+			} catch (error) {
+				return this.writeFailure(error);
+			}
 		}
+		return undefined;
 	}
 
-	private applyInMemory(key: string, sample: CalibrationSample, now: number): void {
-		this.models.set(key, nextEntry(this.models.get(key), sample, now));
-		this.unsaved.add(key);
+	private path(version: number): string {
+		return join(this.dir, versionName(version));
+	}
+
+	private versions(): number[] {
+		return this.files
+			.list(this.dir)
+			.flatMap((name) => {
+				const match = VERSION_NAME.exec(name);
+				return match?.[1] === undefined ? [] : [Number(match[1])];
+			})
+			.sort((a, b) => b - a);
+	}
+
+	/** The newest usable version; unusable newer files are reported and skipped. */
+	private readNewest(): Snapshot {
+		const versions = this.versions();
+		const highest = versions[0] ?? 0;
+		let warning: string | undefined;
+		for (const version of versions) {
+			const text = this.files.read(this.path(version));
+			// Pruned by another session between listing and reading; an older version follows.
+			if (text === undefined) continue;
+			const parsed = parseCalibration(text);
+			if (parsed.warning !== undefined) warning ??= `${this.path(version)}: ${parsed.warning}`;
+			if (!parsed.usable) continue;
+			return warning === undefined
+				? { version: highest, models: parsed.models }
+				: { version: highest, models: parsed.models, warning };
+		}
+		return warning === undefined
+			? { version: highest, models: new Map() }
+			: { version: highest, models: new Map(), warning };
+	}
+
+	private prune(newest: number): void {
+		for (const version of this.versions()) {
+			if (version <= newest - KEPT_VERSIONS) this.files.remove(this.path(version));
+		}
 	}
 
 	private writeFailure(error: unknown): string | undefined {
 		if (this.writeWarned) return undefined;
 		this.writeWarned = true;
-		return `pi-tps: cannot write ${this.path}: ${errorMessage(error)}; calibration is kept for this session only`;
+		return `pi-tps: cannot write ${this.dir}: ${errorMessage(error)}; calibration is kept for this session and retried`;
 	}
 }

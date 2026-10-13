@@ -14,11 +14,19 @@ Each content delta SHALL be estimated once when it arrives; estimates SHALL be a
 - **THEN** computing the live window total touches only the deltas inside the window, not the full text
 
 ### Requirement: Estimates do not depend on delta size
-The sum of the per-delta estimates of a stream SHALL stay within 2 % (at least 2 tokens) of the estimate of the whole text, whatever the delta sizes, including long runs without separators such as digits, identifiers, punctuation and CJK text.
+After every delta, the running total of a stream SHALL equal the estimator's estimate of the text received so far, whatever the delta sizes, as long as no single segment (a run of word characters, or a run of whitespace and punctuation) is longer than 512 characters. Per-delta increments MAY be negative when appended text changes how a segment is estimated. Longer segments SHALL be estimated in 256-character pieces, each piece on its own, so that each delta costs bounded work.
 
-#### Scenario: Long digit run
-- **WHEN** 1000 digits stream as deltas of 1, 2, 4 or 128 characters
-- **THEN** each total is within 2 % of the whole-text estimate
+#### Scenario: Suffix changes a segment's class
+- **WHEN** `12345678901234567890n` streams one character per delta
+- **THEN** the total equals the whole-text estimate of 3, the last delta contributing a negative correction
+
+#### Scenario: Any delta size
+- **WHEN** English prose, JSON tool arguments, identifiers and Chinese prose with ASCII punctuation stream in deltas of 1 to 1000 characters
+- **THEN** every total equals the whole-text estimate
+
+#### Scenario: Over-long segment
+- **WHEN** a run of 1800 newlines streams
+- **THEN** it is estimated as pieces of at most 256 characters, not as one segment
 
 ### Requirement: Estimates are multilingual
 The estimator SHALL produce a token count for text containing CJK characters that is closer to provider counts than a fixed characters-per-token ratio. Accuracy is verified against the fixture texts in the package tests and their `o200k_base` and `cl100k_base` counts, not guaranteed for every tokenizer.
@@ -55,33 +63,44 @@ After each settled, non-burst request with a finite positive `usage.output` and 
 - **THEN** the ratio is not updated
 
 ### Requirement: Calibrated live counts
-Live token counts and live TPS SHALL multiply the raw estimate by the calibration ratio of the active model; when no ratio exists the factor SHALL be 1 and the readout SHALL mark the value as uncalibrated.
+Live token counts and live TPS SHALL multiply the raw estimate by the calibration ratio of the active model; when no ratio exists the factor SHALL be 1 and the readout SHALL mark every live figure that uses the estimate (TPS, output and thinking tokens) as uncalibrated.
 
 #### Scenario: Uncalibrated model
 - **WHEN** the active model has no calibration entry
-- **THEN** live figures use the raw estimate and show the uncalibrated marker
+- **THEN** live figures use the raw estimate and show the uncalibrated marker, also while TPS is not yet available
 
 #### Scenario: Calibrated model
 - **WHEN** the active model has ratio 1.2 and the raw window estimate is 100 tokens
 - **THEN** the live figure uses 120 tokens
 
 ### Requirement: Calibration persists across sessions
-Calibration ratios SHALL be stored in `<agent-dir>/pi-tps-calibration.json`, loaded at session start and written after each update. Concurrent Pi sessions SHALL NOT lose each other's updates. A missing or unreadable file SHALL be treated as empty; an unwritable file SHALL produce one warning per session, SHALL not interrupt measurement, and the ratios updated in memory SHALL stay authoritative for the rest of the session.
+Calibration ratios SHALL be stored in the directory `<agent-dir>/pi-tps-calibration/` as numbered versions and loaded at session start. A missing directory SHALL be treated as empty; a corrupt newest version SHALL produce one warning and the newest valid version SHALL be used; a failing write SHALL produce one warning per session and SHALL not interrupt measurement.
 
 #### Scenario: Restart
 - **WHEN** Pi restarts after calibrating a model
 - **THEN** the first live readout for that model uses the stored ratio
 
 #### Scenario: Corrupt file
-- **WHEN** the calibration file contains invalid JSON
-- **THEN** calibration starts empty and the user sees one warning
+- **WHEN** the newest calibration version contains invalid JSON
+- **THEN** the newest valid version is used and the user sees one warning
+
+### Requirement: Calibration is shared by concurrent sessions
+Each update SHALL publish the next version, derived from the newest one, with an exclusive and atomic file creation; a session that loses the race SHALL re-read the newest version and apply its samples again. Samples not yet published (lost races, failing writes) SHALL be kept as samples, applied on top of the newest version for the session's own ratios, and retried with the next update and at session shutdown.
 
 #### Scenario: Concurrent sessions
 - **WHEN** two Pi sessions update different models at the same moment
-- **THEN** the file afterwards holds both updates
+- **THEN** the newest version afterwards holds both updates
+
+#### Scenario: Concurrent update of one model
+- **WHEN** a session's sample for a model is not yet published while another session publishes a sample for the same model
+- **THEN** the newest version afterwards reflects both samples and the other session's sample is not reverted
+
+#### Scenario: No later update
+- **WHEN** the last sample of a session could not be published when it arrived
+- **THEN** it is published at session shutdown
 
 #### Scenario: Unwritable file
-- **WHEN** the file is readable but every write fails and three samples of 2 arrive for a model with ratio 1
+- **WHEN** the directory is readable but every write fails and three samples of 2 arrive for a model with ratio 1
 - **THEN** the in-memory ratio keeps converging toward 2
 
 ### Requirement: Model identity

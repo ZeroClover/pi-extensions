@@ -1,42 +1,24 @@
-import { closeSync, mkdirSync, openSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
+import { linkSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 
-/** Synchronous file access, injected so loaders can be tested without touching the disk. */
+/** Synchronous file access, injected so stores can be tested without touching the disk. */
 export interface FileLayer {
 	/** Returns the file content, or `undefined` when the file does not exist. Throws on any other error. */
 	read(path: string): string | undefined;
-	/** Replaces the file atomically. */
-	write(path: string, content: string): void;
+	/** Names of the entries in a directory; empty when the directory does not exist. */
+	list(dir: string): string[];
 	/**
-	 * Takes an exclusive cross-process lock for `path` and returns its release function, or `undefined` when another
-	 * process holds it beyond the wait time. Throws when the lock cannot be created at all (for example a read-only
-	 * directory).
+	 * Creates the file with the given content atomically and only if it does not exist yet. Returns false when it
+	 * exists. Readers never see a partial file, and of two concurrent publishers of one path exactly one succeeds.
 	 */
-	lock(path: string): (() => void) | undefined;
+	publish(path: string, content: string): boolean;
+	/** Removes a file; a missing file is not an error. */
+	remove(path: string): void;
 }
-
-const LOCK_WAIT_MS = 200;
-const LOCK_RETRY_MS = 5;
-/** A lock older than this was left by a crashed process; the critical section takes well under a millisecond. */
-const LOCK_STALE_MS = 2000;
 
 function hasCode(error: unknown, code: string): boolean {
 	return error instanceof Error && "code" in error && error.code === code;
-}
-
-const sleeper = new Int32Array(new SharedArrayBuffer(4));
-
-function sleep(ms: number): void {
-	Atomics.wait(sleeper, 0, 0, ms);
-}
-
-function removeIfStale(lockPath: string): void {
-	try {
-		if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) unlinkSync(lockPath);
-	} catch (error) {
-		// Released by its owner between the failed open and this check.
-		if (!hasCode(error, "ENOENT")) throw error;
-	}
 }
 
 export const nodeFiles: FileLayer = {
@@ -48,34 +30,35 @@ export const nodeFiles: FileLayer = {
 			throw error;
 		}
 	},
-	write(path, content) {
-		mkdirSync(dirname(path), { recursive: true });
-		// Write then rename, so a concurrent reader never sees a half-written file.
-		const temporary = `${path}.${process.pid}.tmp`;
-		writeFileSync(temporary, content, "utf8");
-		renameSync(temporary, path);
+	list(dir) {
+		try {
+			return readdirSync(dir);
+		} catch (error) {
+			if (hasCode(error, "ENOENT")) return [];
+			throw error;
+		}
 	},
-	lock(path) {
-		const lockPath = `${path}.lock`;
+	publish(path, content) {
 		mkdirSync(dirname(path), { recursive: true });
-		const deadline = Date.now() + LOCK_WAIT_MS;
-		for (;;) {
-			try {
-				closeSync(openSync(lockPath, "wx"));
-				return () => {
-					try {
-						unlinkSync(lockPath);
-					} catch (error) {
-						// Taken over as stale by another process; nothing left to release.
-						if (!hasCode(error, "ENOENT")) throw error;
-					}
-				};
-			} catch (error) {
-				if (!hasCode(error, "EEXIST")) throw error;
-			}
-			removeIfStale(lockPath);
-			if (Date.now() >= deadline) return undefined;
-			sleep(LOCK_RETRY_MS);
+		// The content is complete before it becomes visible: hard-linking a finished temporary file is atomic and,
+		// unlike rename, fails instead of replacing an existing file.
+		const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
+		writeFileSync(temporary, content, "utf8");
+		try {
+			linkSync(temporary, path);
+			return true;
+		} catch (error) {
+			if (hasCode(error, "EEXIST")) return false;
+			throw error;
+		} finally {
+			unlinkSync(temporary);
+		}
+	},
+	remove(path) {
+		try {
+			unlinkSync(path);
+		} catch (error) {
+			if (!hasCode(error, "ENOENT")) throw error;
 		}
 	},
 };

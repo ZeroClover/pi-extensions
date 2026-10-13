@@ -41,7 +41,7 @@ function hasRate(record: RequestRecord): boolean {
 	return !record.burst && record.outputMs >= MIN_SETTLED_SPAN_MS;
 }
 
-/** Token-weighted rate over the given requests, with whether any of them relied on the estimate. */
+/** Summed visible output over summed active output span, with whether any of the requests relied on the estimate. */
 function weightedRate(records: readonly RequestRecord[]): { tps: number; estimated: boolean } | undefined {
 	let tokens = 0;
 	let ms = 0;
@@ -61,8 +61,9 @@ function meanTtft(records: readonly RequestRecord[]): number | undefined {
 
 /**
  * Aggregates request records with one method for runs and sessions, so their figures cannot disagree:
- * - TPS: token-weighted over non-burst requests with at least 1 s of active output, so long and short streams weigh
- *   by their tokens. Aborted requests count only when nothing else qualifies, so an aborted run still shows a rate.
+ * - TPS: the aggregate generation rate, summed visible output over summed active output span of the non-burst requests
+ *   with at least 1 s of active output (the per-request rates weighted by their active duration). Aborted requests
+ *   count only when nothing else qualifies, so an aborted run still shows a rate.
  * - Burst throughput: only when every request was a burst, i.e. the whole answer was buffered.
  * - TTFT: mean over non-aborted requests, falling back to aborted ones the same way.
  * - Everything else: sums over all requests.
@@ -71,6 +72,7 @@ export function aggregate(records: readonly RequestRecord[]): Aggregate {
 	const result: Aggregate = {
 		requests: records.length,
 		estimated: false,
+		tokensEstimated: false,
 		inputTokens: 0,
 		cacheReadTokens: 0,
 		cacheWriteTokens: 0,
@@ -90,6 +92,7 @@ export function aggregate(records: readonly RequestRecord[]): Aggregate {
 		result.stallMs += record.stallMs;
 		result.stallCount += record.stallCount;
 		if (record.cost !== undefined) result.cost = (result.cost ?? 0) + record.cost;
+		if (record.estimated) result.tokensEstimated = true;
 	}
 
 	const completed = records.filter((record) => record.outcome === "settled");
@@ -103,7 +106,10 @@ export function aggregate(records: readonly RequestRecord[]): Aggregate {
 	} else if (records.length > 0 && records.every((record) => record.burst)) {
 		const tokens = records.reduce((sum, record) => sum + record.outputTokens, 0);
 		const ms = records.reduce((sum, record) => sum + record.elapsedMs, 0);
-		if (ms > 0) result.burstTps = tokens / (ms / 1000);
+		if (ms > 0) {
+			result.burstTps = tokens / (ms / 1000);
+			result.estimated = records.some((record) => record.estimated);
+		}
 	}
 	const ttftMs = meanTtft(completed) ?? meanTtft(aborted);
 	if (ttftMs !== undefined) result.ttftMs = ttftMs;

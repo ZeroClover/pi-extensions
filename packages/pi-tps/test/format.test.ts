@@ -27,6 +27,7 @@ function runSummary(overrides: Partial<RunSummary> = {}): RunSummary {
 		requests: 3,
 		tps: 110.5,
 		estimated: false,
+		tokensEstimated: false,
 		ttftMs: 700,
 		inputTokens: 500,
 		cacheReadTokens: 5700,
@@ -48,6 +49,7 @@ function sessionSummary(overrides: Partial<SessionSummary> = {}): SessionSummary
 		requests: 9,
 		tps: 110,
 		estimated: false,
+		tokensEstimated: false,
 		ttftMs: 600,
 		inputTokens: 40_000,
 		cacheReadTokens: 0,
@@ -109,7 +111,9 @@ describe("readout phases", () => {
 	});
 
 	it("working shows run time, requests and output, and no rate", () => {
-		expect(both({ phase: "working", elapsedMs: 12_300, requests: 1, outputTokens: 1600 }, "⠹")).toEqual({
+		expect(
+			both({ phase: "working", elapsedMs: 12_300, requests: 1, outputTokens: 1600, estimated: false }, "⠹"),
+		).toEqual({
 			text: "⠹ run 12.3s · req 1 · out 1.6K",
 			symbols: "⠹ 12.3s ×1 ↓1.6K",
 		});
@@ -203,11 +207,33 @@ describe("displayed fields", () => {
 		});
 	});
 
-	it("marks uncalibrated live TPS (uncalibrated live figure)", () => {
+	it("marks every uncalibrated live estimate (uncalibrated live figure)", () => {
 		expect(both({ ...live, calibrated: false })).toEqual({
-			text: "⠋ TPS ~48.6 tok/s · TTFT 1.2s · out 1.2K",
-			symbols: "⠋ »~48.6/s ⇥1.2s ↓1.2K",
+			text: "⠋ TPS ~48.6 tok/s · TTFT 1.2s · out ~1.2K",
+			symbols: "⠋ »~48.6/s ⇥1.2s ↓~1.2K",
 		});
+	});
+
+	it("keeps the marker on token counts before live TPS is available (uncalibrated warm-up)", () => {
+		const { liveTps: _omit, ...early } = live;
+		const warmUp: LiveSnapshot = { ...early, ttftMs: 700, outputTokens: 10, thinkingTokens: 30, calibrated: false };
+		expect(both(warmUp)).toEqual({
+			text: "⠋ TPS — · TTFT 0.7s · out ~10 · think ~30",
+			symbols: "⠋ »— ⇥0.7s ↓~10 ✻~30",
+		});
+	});
+
+	it("marks summed tokens that rely on the estimate, independently of the TPS", () => {
+		const summary = runSummary({ tokensEstimated: true });
+		expect(both({ phase: "run", run: summary }).text).toContain(
+			"TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out ~1.4K · think ~94 4.1s",
+		);
+	});
+
+	it("marks the working phase's output when a finished request relied on the estimate", () => {
+		expect(both({ phase: "working", elapsedMs: 1000, requests: 1, outputTokens: 59, estimated: true }).text).toBe(
+			"⠋ run 1.0s · req 1 · out ~59",
+		);
 	});
 
 	it("tags only the TPS segment for threshold colouring, and not the burst throughput", () => {

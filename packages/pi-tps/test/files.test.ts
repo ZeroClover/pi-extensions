@@ -1,46 +1,40 @@
-import { existsSync, mkdtempSync, rmSync, utimesSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { nodeFiles } from "../src/files.ts";
 
+let root: string;
 let dir: string;
-let path: string;
 
 beforeEach(() => {
-	dir = mkdtempSync(join(tmpdir(), "pi-tps-files-"));
-	path = join(dir, "data.json");
+	root = mkdtempSync(join(tmpdir(), "pi-tps-files-"));
+	dir = join(root, "store");
 });
 
 afterEach(() => {
-	rmSync(dir, { recursive: true, force: true });
+	rmSync(root, { recursive: true, force: true });
 });
 
 describe("nodeFiles", () => {
-	it("reads a missing file as undefined and writes atomically", () => {
-		expect(nodeFiles.read(path)).toBeUndefined();
-		nodeFiles.write(path, "{}");
-		expect(nodeFiles.read(path)).toBe("{}");
-		expect(existsSync(`${path}.${process.pid}.tmp`)).toBe(false);
+	it("treats a missing file and directory as absent", () => {
+		expect(nodeFiles.read(join(dir, "x.json"))).toBeUndefined();
+		expect(nodeFiles.list(dir)).toEqual([]);
+		expect(() => nodeFiles.remove(join(dir, "x.json"))).not.toThrow();
 	});
 
-	it("holds the lock exclusively until it is released", () => {
-		const release = nodeFiles.lock(path);
-		expect(release).toBeDefined();
-		expect(nodeFiles.lock(path)).toBeUndefined();
-		release?.();
-		const again = nodeFiles.lock(path);
-		expect(again).toBeDefined();
-		again?.();
+	it("publishes a file exactly once and leaves no temporary file", () => {
+		const path = join(dir, "0000000001.json");
+		expect(nodeFiles.publish(path, "first")).toBe(true);
+		expect(nodeFiles.publish(path, "second")).toBe(false);
+		expect(nodeFiles.read(path)).toBe("first");
+		expect(readdirSync(dir)).toEqual(["0000000001.json"]);
 	});
 
-	it("takes over a stale lock", () => {
-		const release = nodeFiles.lock(path);
-		const old = new Date(Date.now() - 10_000);
-		utimesSync(`${path}.lock`, old, old);
-		const takeover = nodeFiles.lock(path);
-		expect(takeover).toBeDefined();
-		takeover?.();
-		release?.();
+	it("removes a published file", () => {
+		const path = join(dir, "0000000001.json");
+		nodeFiles.publish(path, "x");
+		nodeFiles.remove(path);
+		expect(existsSync(path)).toBe(false);
 	});
 });

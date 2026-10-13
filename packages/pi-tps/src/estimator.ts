@@ -9,10 +9,11 @@ export function estimateTokens(text: string): number {
 // The characters at which tokenx splits text into segments: whitespace and these ASCII punctuation marks.
 const SEPARATOR = /[\s.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]/;
 
-/** Index where the last word starts after a separator, or 0 when the text has no such boundary. */
+/** Index where the text's last segment starts: a run of word characters, or of separators. */
 function lastSegmentStart(text: string): number {
+	const lastIsSeparator = SEPARATOR.test(text.charAt(text.length - 1));
 	for (let i = text.length - 1; i > 0; i--) {
-		if (SEPARATOR.test(text.charAt(i - 1)) && !SEPARATOR.test(text.charAt(i))) return i;
+		if (SEPARATOR.test(text.charAt(i - 1)) !== lastIsSeparator) return i;
 	}
 	return 0;
 }
@@ -24,16 +25,17 @@ function chunkEnd(text: string, length: number): number {
 }
 
 /**
- * Estimates one stream of deltas incrementally, so that the running total tracks the estimate of the whole text
- * whatever the delta sizes. Segments that can no longer grow are committed once; only the open trailing segment is
- * re-estimated per delta. An over-long open segment (digit runs, CJK prose without ASCII separators) is committed in
- * chunks so each delta costs bounded work.
+ * Estimates one stream of deltas incrementally. Only the last segment stays open; everything before it can no
+ * longer change and is committed once. After each delta the total is the committed estimate plus the estimate of
+ * the open segment, so it equals the estimate of the whole text received so far, whatever the delta sizes. An
+ * increment can be negative, because tokenx's estimate of a segment is not monotonic in its length (a digit run
+ * followed by `n` is a word, not a number). An open segment longer than {@link ESTIMATOR_MAX_OPEN_CHARS} is committed
+ * in pieces of {@link ESTIMATOR_COMMIT_CHARS}, each estimated on its own, which bounds the work per delta.
  */
 export class StreamEstimator {
 	private open = "";
 	private committed = 0;
-	/** Tokens already returned; the total can dip when a segment changes class, so returns never go below it. */
-	private returned = 0;
+	private total = 0;
 
 	add(delta: string): number {
 		if (delta.length === 0) return 0;
@@ -48,9 +50,9 @@ export class StreamEstimator {
 		}
 		this.open = open;
 		const total = this.committed + estimateTokens(open);
-		const added = Math.max(0, total - this.returned);
-		this.returned += added;
-		return added;
+		const increment = total - this.total;
+		this.total = total;
+		return increment;
 	}
 }
 

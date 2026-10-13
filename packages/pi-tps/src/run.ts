@@ -46,6 +46,7 @@ export class RunTracker {
 			elapsedMs: this.clock.now() - run.startAt,
 			requests: run.requests.length,
 			outputTokens: run.requests.reduce((sum, record) => sum + visibleOutput(record), 0),
+			estimated: run.requests.some((record) => record.estimated),
 		};
 	}
 

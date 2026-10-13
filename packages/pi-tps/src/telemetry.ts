@@ -80,10 +80,12 @@ export interface Aggregate {
 	requests: number;
 	/** Visible output tokens over active output spans of settled, non-burst requests. */
 	tps?: number;
-	/** Whether a request contributing to the TPS relied on the estimate. */
+	/** Whether the shown rate (TPS, or burst throughput) relied on the estimate. */
 	estimated: boolean;
-	/** Output tokens over elapsed time of burst requests, only when no request contributes to the TPS. */
+	/** Output tokens over elapsed time, only when every request was a burst. */
 	burstTps?: number;
+	/** Whether a record behind the summed output or thinking tokens relied on the estimate. */
+	tokensEstimated: boolean;
 	/** Mean over non-aborted requests. */
 	ttftMs?: number;
 	inputTokens: number;
@@ -136,6 +138,8 @@ export interface WorkingSnapshot {
 	requests: number;
 	/** Visible output tokens of the run's requests so far. */
 	outputTokens: number;
+	/** Whether one of those requests relied on the estimate. */
+	estimated: boolean;
 }
 
 export type StatusSnapshot =

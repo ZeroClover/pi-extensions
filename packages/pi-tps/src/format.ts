@@ -85,8 +85,9 @@ function rate(value: number, estimated: boolean): Field {
 
 const UNKNOWN_RATE: Field = { text: `TPS ${UNKNOWN}`, symbol: `»${UNKNOWN}` };
 
-function burst(value: number): Field {
-	return { text: `burst ${formatTps(value)} tok/s`, symbol: `↯${formatTps(value)}/s` };
+function burst(value: number, estimated: boolean): Field {
+	const figure = `${estimated ? ESTIMATED : ""}${formatTps(value)}`;
+	return { text: `burst ${figure} tok/s`, symbol: `↯${figure}/s` };
 }
 
 function ttft(ms: number | undefined): Field {
@@ -108,14 +109,16 @@ function input(tokens: number, cacheRead: number, cacheWrite: number): Field | u
 	return { text: `in ${figure} (cache ${share})`, symbol: `↑${figure} ↻${share}` };
 }
 
-function output(tokens: number): Field {
-	return { text: `out ${formatTokens(tokens)}`, symbol: `↓${formatTokens(tokens)}` };
+function output(tokens: number, estimated: boolean): Field {
+	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}`;
+	return { text: `out ${figure}`, symbol: `↓${figure}` };
 }
 
-function thinking(tokens: number, ms: number | undefined): Field {
+function thinking(tokens: number, ms: number | undefined, estimated: boolean): Field {
 	// Below 50 ms the duration would print as 0.0s and say nothing.
 	const duration = ms !== undefined && ms >= 50 ? ` ${formatDuration(ms)}` : "";
-	return { text: `think ${formatTokens(tokens)}${duration}`, symbol: `✻${formatTokens(tokens)}${duration}` };
+	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}${duration}`;
+	return { text: `think ${figure}`, symbol: `✻${figure}` };
 }
 
 function stall(ms: number, count: number): Field {
@@ -137,8 +140,12 @@ function live(snapshot: LiveSnapshot): Field[] {
 		fields.push(ttft(snapshot.elapsedMs));
 	} else {
 		fields.push(snapshot.liveTps === undefined ? UNKNOWN_RATE : rate(snapshot.liveTps, !snapshot.calibrated));
-		fields.push(ttft(snapshot.ttftMs), output(snapshot.outputTokens));
-		if (snapshot.thinkingTokens !== undefined) fields.push(thinking(snapshot.thinkingTokens, snapshot.thinkingMs));
+		// Live token counts are always estimates; they are marked until the model is calibrated.
+		const uncalibrated = !snapshot.calibrated;
+		fields.push(ttft(snapshot.ttftMs), output(snapshot.outputTokens, uncalibrated));
+		if (snapshot.thinkingTokens !== undefined) {
+			fields.push(thinking(snapshot.thinkingTokens, snapshot.thinkingMs, uncalibrated));
+		}
 	}
 	if (snapshot.request > 1) fields.push(count("req", snapshot.request));
 	return fields;
@@ -148,13 +155,13 @@ function working(snapshot: WorkingSnapshot): Field[] {
 	return [
 		{ text: `run ${formatDuration(snapshot.elapsedMs)}`, symbol: formatDuration(snapshot.elapsedMs) },
 		count("req", snapshot.requests),
-		output(snapshot.outputTokens),
+		output(snapshot.outputTokens, snapshot.estimated),
 	];
 }
 
 function summaryRate(summary: RunSummary | SessionSummary): Field {
 	if (summary.tps !== undefined) return rate(summary.tps, summary.estimated);
-	if (summary.burstTps !== undefined) return burst(summary.burstTps);
+	if (summary.burstTps !== undefined) return burst(summary.burstTps, summary.estimated);
 	return UNKNOWN_RATE;
 }
 
@@ -167,8 +174,10 @@ function run(summary: RunSummary): Field[] {
 	];
 	const inputField = input(summary.inputTokens, summary.cacheReadTokens, summary.cacheWriteTokens);
 	if (inputField) fields.push(inputField);
-	fields.push(output(summary.visibleOutputTokens));
-	if (summary.thinkingTokens > 0) fields.push(thinking(summary.thinkingTokens, summary.thinkingMs));
+	fields.push(output(summary.visibleOutputTokens, summary.tokensEstimated));
+	if (summary.thinkingTokens > 0) {
+		fields.push(thinking(summary.thinkingTokens, summary.thinkingMs, summary.tokensEstimated));
+	}
 	if (summary.stallMs > 0) fields.push(stall(summary.stallMs, summary.stallCount));
 	fields.push(count("req", summary.requests));
 	if (summary.cost !== undefined) fields.push(cost(summary.cost));
@@ -181,7 +190,7 @@ function session(summary: SessionSummary): Field[] {
 	const fields: Field[] = [SESSION_MARKER, summaryRate(summary), ttft(summary.ttftMs)];
 	const inputField = input(summary.inputTokens, summary.cacheReadTokens, summary.cacheWriteTokens);
 	if (inputField) fields.push(inputField);
-	fields.push(output(summary.visibleOutputTokens), count("runs", summary.runs));
+	fields.push(output(summary.visibleOutputTokens, summary.tokensEstimated), count("runs", summary.runs));
 	if (summary.cost !== undefined) fields.push(cost(summary.cost));
 	return fields;
 }
