@@ -84,6 +84,11 @@
 - [x] 12.1 Replace the bounded sample-id list with per-session sequence numbers: a random session id per store, ordered sample numbers, a `writers` record per version carried forward, exact confirmation, 7-day removal of stale records, own record removed at shutdown, unprovable samples dropped when the own record vanished; verify `test/calibration.test.ts` covers "Large backlog" (512, 513 and 1025 samples, checking samples, ratio and updatedAt after a restart), "Pause after publishing", "Crashed session", "Session paused beyond the retention", the existing concurrency and ABA scenarios, and removal at shutdown
 - [x] 12.2 Update README and run `pnpm check`, the load smoke test and two concurrent print sessions; verify the newest version holds the expected samples and no record of the finished sessions
 
+## 13. Fifth review fix (REVIEW.md)
+
+- [x] 13.1 Note a possible publication as soon as the creation succeeds or throws, before removing old versions; verify `test/calibration.test.ts` covers "Cleanup fails after publishing" (successful creation, failing cleanup, record expired, retry: samples and ratio unchanged after a restart), a creation that throws after the file exists, and that a timely retry after a failing cleanup still stores nothing twice
+- [x] 13.2 Run `pnpm check`, the load smoke test and `openspec validate --strict`
+
 ## Workflow follow-up
 
 - Archive the change after review (`openspec archive add-tps-readout` from `packages/pi-tps`), then commit as `feat(pi-tps): add live TPS readout`.

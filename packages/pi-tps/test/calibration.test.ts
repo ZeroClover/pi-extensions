@@ -30,6 +30,9 @@ class MemoryDir implements FileLayer {
 	/** Runs once right after the next successful creation, before publish returns. */
 	afterPublish: (() => void) | undefined;
 	failPublish: Error | undefined;
+	/** Thrown by the next publish after it created the file, as when removing the temporary file fails. */
+	failAfterCreating: Error | undefined;
+	failRemove: Error | undefined;
 	publishes = 0;
 
 	read(path: string): string | undefined {
@@ -53,10 +56,14 @@ class MemoryDir implements FileLayer {
 		const after = this.afterPublish;
 		this.afterPublish = undefined;
 		after?.();
+		const failure = this.failAfterCreating;
+		this.failAfterCreating = undefined;
+		if (failure) throw failure;
 		return true;
 	}
 
 	remove(path: string): void {
+		if (this.failRemove) throw this.failRemove;
 		this.files.delete(path);
 	}
 }
@@ -315,6 +322,65 @@ describe("CalibrationStore", () => {
 		expect(restored.entry("p/b")?.samples).toBe(1);
 		paused.update("p/a", { reported: 200, estimated: 100 }, 3);
 		expect(store(dir, clock).entry("p/a")?.samples).toBe(2);
+	});
+
+	describe("a failure after the version was created", () => {
+		const DAY = 86_400_000;
+
+		/** B stores three samples of ratio 1 (versions 1 to 3); then A stores one sample of 4 while `fail` is set. */
+		function setUp(fail: (dir: MemoryDir) => void) {
+			let now = 1_000 * WRITER_RETENTION_MS;
+			const clock = () => now;
+			const dir = new MemoryDir();
+			const other = store(dir, clock);
+			for (let i = 0; i < 3; i++) other.update("p/m", { reported: 100, estimated: 100 }, i);
+			const mine = store(dir, clock);
+			fail(dir);
+			const warning = mine.update("p/m", { reported: 400, estimated: 100 }, 10);
+			dir.failRemove = undefined;
+			const advance = (ms: number) => {
+				now += ms;
+			};
+			return { dir, clock, other, mine, warning, advance };
+		}
+
+		it("does not apply the samples again after the record expired (cleanup fails after publishing)", () => {
+			const { dir, clock, other, mine, warning, advance } = setUp((dir) => {
+				dir.failRemove = new Error("EIO");
+			});
+			expect(warning).toContain("EIO");
+			expect(store(dir, clock).entry("p/m")).toMatchObject({ samples: 4, ratio: 1.9 });
+			advance(WRITER_RETENTION_MS + DAY);
+			other.update("p/other", { reported: 100, estimated: 100 }, 20);
+			expect(mine.flush()).toBeUndefined();
+			const restored = store(dir, clock);
+			expect(restored.entry("p/m")?.samples).toBe(4);
+			expect(restored.ratio("p/m")).toBeCloseTo(1.9);
+			expect(restored.entry("p/other")?.samples).toBe(1);
+		});
+
+		it("does not apply the samples again when the creation threw after the file existed", () => {
+			const { dir, clock, other, mine, warning, advance } = setUp((dir) => {
+				dir.failAfterCreating = new Error("EPERM");
+			});
+			expect(warning).toContain("EPERM");
+			advance(WRITER_RETENTION_MS + DAY);
+			other.update("p/other", { reported: 100, estimated: 100 }, 20);
+			mine.flush();
+			expect(store(dir, clock).entry("p/m")).toMatchObject({ samples: 4 });
+			expect(store(dir, clock).ratio("p/m")).toBeCloseTo(1.9);
+		});
+
+		it("stores nothing twice when it retries in time", () => {
+			const { dir, clock, mine } = setUp((dir) => {
+				dir.failRemove = new Error("EIO");
+			});
+			expect(mine.flush()).toBeUndefined();
+			mine.update("p/m", { reported: 100, estimated: 100 }, 11);
+			const restored = store(dir, clock).entry("p/m");
+			expect(restored?.samples).toBe(5);
+			expect(restored?.ratio).toBeCloseTo(1.63);
+		});
 	});
 
 	it("removes its own record when the session closes", () => {

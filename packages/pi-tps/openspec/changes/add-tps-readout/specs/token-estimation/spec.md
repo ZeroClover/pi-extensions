@@ -116,11 +116,15 @@ Each session SHALL number its samples in order, and each version SHALL record pe
 - **THEN** the in-memory ratio keeps converging toward 2
 
 ### Requirement: Session records are reclaimed safely
-A session SHALL remove its own record from the newest version when it shuts down. Records of sessions not seen for 7 days SHALL be removed by the next publish. A session that finds its own record removed although it published before SHALL drop the samples whose storage it can no longer prove instead of applying them again.
+A session SHALL remove its own record from the newest version when it shuts down. Records of sessions not seen for 7 days SHALL be removed by the next publish. A session that finds its own record removed although it published before SHALL drop the samples whose storage it can no longer prove instead of applying them again. A version counts as possibly published as soon as its creation succeeds, and also when the creation fails with an error, whatever fails afterwards.
 
 #### Scenario: Crashed session
 - **WHEN** a session's record was last updated 8 days ago and another session publishes
 - **THEN** the new version no longer holds that record
+
+#### Scenario: Cleanup fails after publishing
+- **WHEN** a session's version is created but removing old versions then fails, and the session retries only after its record was removed
+- **THEN** it treats the samples of that version as possibly stored and drops them instead of applying them again
 
 #### Scenario: Session paused beyond the retention
 - **WHEN** a session published samples, paused for more than 7 days so that its record was removed, and resumes

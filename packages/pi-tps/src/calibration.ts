@@ -263,10 +263,10 @@ export class CalibrationStore {
 			const writers = this.liveWriters(snapshot, now);
 			writers.set(this.writer, { seq: last.seq, at: now });
 			try {
-				if (this.publish(snapshot, this.models, writers)) {
+				this.publish(snapshot, this.models, writers, () => {
 					this.createdUpTo = last.seq;
 					this.createdAt = now;
-				}
+				});
 			} catch (error) {
 				return this.writeFailure(error);
 			}
@@ -291,7 +291,8 @@ export class CalibrationStore {
 			const writers = this.liveWriters(snapshot, this.clock());
 			writers.delete(this.writer);
 			try {
-				this.publish(snapshot, snapshot.models, writers);
+				// Removing the record carries no samples, so a possible creation needs no note.
+				this.publish(snapshot, snapshot.models, writers, () => {});
 			} catch (error) {
 				return warning ?? this.writeFailure(error);
 			}
@@ -322,11 +323,17 @@ export class CalibrationStore {
 		return writers;
 	}
 
-	/** Creates the version after the snapshot's; true when the file was created (which proves nothing more). */
+	/**
+	 * Creates the version after the snapshot's and then removes old versions; true when the file was created (which
+	 * proves nothing more). `notePossibleCreation` runs as soon as the file may exist: when the creation reports
+	 * success, before the cleanup that can still fail, and when the creation throws, since the file can exist although
+	 * the call failed.
+	 */
 	private publish(
 		snapshot: Snapshot,
 		models: ReadonlyMap<string, CalibrationEntry>,
 		writers: ReadonlyMap<string, WriterRecord>,
+		notePossibleCreation: () => void,
 	): boolean {
 		const file: CalibrationFile = {
 			version: 1,
@@ -334,9 +341,17 @@ export class CalibrationStore {
 			writers: Object.fromEntries(writers),
 		};
 		const version = snapshot.version + 1;
-		const created = this.files.publish(this.path(version), `${JSON.stringify(file, null, "\t")}\n`);
-		if (created) this.prune(version);
-		return created;
+		let created: boolean;
+		try {
+			created = this.files.publish(this.path(version), `${JSON.stringify(file, null, "\t")}\n`);
+		} catch (error) {
+			notePossibleCreation();
+			throw error;
+		}
+		if (!created) return false;
+		notePossibleCreation();
+		this.prune(version);
+		return true;
 	}
 
 	private path(version: number): string {
