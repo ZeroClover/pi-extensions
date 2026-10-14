@@ -7,6 +7,12 @@ export const LIVE_WINDOW_MS = 5000;
 /** Live TPS stays unavailable until the window holds this much counted generation time. */
 export const LIVE_MIN_COUNTED_MS = 1500;
 
+/**
+ * Time after a delta that starts a phase or ends an output stall in which arriving tokens are taken for a delivery
+ * backlog (generated before that delta, in time that was not measured) rather than generation.
+ */
+export const BACKLOG_WINDOW_MS = 300;
+
 /** A settled TPS needs at least this much generation time; shorter spans are too noisy to report. */
 export const MIN_SETTLED_SPAN_MS = 1000;
 

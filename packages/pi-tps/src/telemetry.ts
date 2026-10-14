@@ -53,13 +53,15 @@ export interface RequestRecord {
 	/** Active output span: gaps between consecutive output deltas, stalls excluded. */
 	outputMs: number;
 	/**
-	 * Generation time: the thinking time plus the active output span, unrounded because it is the denominator of
-	 * `tps`.
+	 * Generation time, unrounded because it is the denominator of `tps`: the thinking time plus the active output span
+	 * when a thinking phase was observed, else the counted output time (the output span without the backlog windows
+	 * after the first delta and after stalls); 0 when no output estimate arrived.
 	 */
 	generationMs: number;
 	/**
 	 * Tokens the generation rate counts: all output tokens (thinking included) when a thinking phase was observed,
-	 * else the output tokens without the reported reasoning tokens.
+	 * else the output tokens without the reported reasoning tokens, scaled by the share of the arriving output
+	 * estimate that was counted (possibly fractional; 0 when no output estimate arrived).
 	 */
 	generatedTokens: number;
 	/**

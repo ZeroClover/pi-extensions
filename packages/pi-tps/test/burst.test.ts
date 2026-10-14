@@ -58,6 +58,21 @@ describe("classifyBurst", () => {
 		expect(classifyBurst(timeline([]), 120)).toBe("few-batches");
 	});
 
+	it("leaves the phase-opening backlog out of the cluster search (backlog when the answer starts)", () => {
+		const backlog = evenly(20, 5, 20);
+		const rest = evenly(25, 80, 10, 180);
+		const entries = [...backlog, ...rest];
+		const marked = { ...timeline(entries), backlog: entries.map(([at]) => at <= 300) };
+		expect(classifyBurst(timeline(entries), 650, 300)).toBe("cluster");
+		expect(classifyBurst(marked, 650, 300)).toBeUndefined();
+	});
+
+	it("still marks a flush after a stall that follows normal streaming (flush after normal streaming)", () => {
+		const entries = [...evenly(10, 100, 10), ...evenly(6, 10, 50, 6900)];
+		const marked = { ...timeline(entries), backlog: entries.map(([at]) => at <= 300) };
+		expect(classifyBurst(marked, 400, 100)).toBe("cluster");
+	});
+
 	it("does not apply the cluster rule to streams of 1 s or less", () => {
 		const entries = [...evenly(5, 100, 1), [450, 100] as [number, number]];
 		expect(classifyBurst(timeline(entries), 1000, 1000)).toBeUndefined();
@@ -78,5 +93,12 @@ describe("largestClusterShare", () => {
 
 	it("finds the densest window", () => {
 		expect(largestClusterShare(timeline([...evenly(4, 1000, 1), [3050, 4]]))).toBe(5 / 8);
+	});
+
+	it("searches outside the backlog windows and divides by all tokens (several short output phases)", () => {
+		const entries = [...evenly(5, 100, 10), ...evenly(5, 100, 10, 2500)];
+		const backlog = entries.map(([at]) => at <= 300 || (at >= 2500 && at <= 2800));
+		expect(largestClusterShare(timeline(entries))).toBe(0.2);
+		expect(largestClusterShare({ ...timeline(entries), backlog })).toBe(0.1);
 	});
 });

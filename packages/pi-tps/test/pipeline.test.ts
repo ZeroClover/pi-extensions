@@ -75,11 +75,12 @@ function evenStream(clock: FakeClock, spanMs: number) {
 }
 
 describe("request settlement and the TPS average agree after persistence (span just under one second)", () => {
+	// Without thinking the first 300 ms after the first delta do not count, so 1.3 s of span is 1 s of counted time.
 	it.each([
-		[999.49, false],
-		[999.5, false],
-		[999.99, false],
-		[1000, true],
+		[1299.49, false],
+		[1299.5, false],
+		[1299.99, false],
+		[1300, true],
 	])("a %f ms active span contributes to the model's TPS average: %s", (spanMs, contributes) => {
 		const clock = new FakeClock();
 		const run = persistedRun(clock, evenStream(clock, spanMs), 110);
@@ -156,9 +157,11 @@ describe("estimator corrections are not token arrivals (estimator correction at 
 	}
 
 	it("does not mark evenly arriving deltas as burst when the last one lowers the estimate", () => {
-		const run = settleWithRealEstimator(["123456", "789012", "345678", "90", "n"], 30);
-		expect(run.requests[0]).toMatchObject({ burst: false, outputMs: 1200, outputTps: 25, tps: 25 });
-		expect(averagesOf([run]).tps).toBe(25);
+		// Increments 2, 2, 2, 2, 1, -5: 5 of the 9 arriving tokens count, over 1.2 s.
+		const run = settleWithRealEstimator(["123456", "789012", "345678", "901234", "56", "n"], 54);
+		expect(run.requests[0]).toMatchObject({ burst: false, outputMs: 1500, outputTps: 36, generatedTokens: 30 });
+		expect(run.requests[0]?.tps).toBeCloseTo(25);
+		expect(averagesOf([run]).tps).toBe(run.requests[0]?.tps);
 	});
 
 	it("keeps the cluster share a share of arriving tokens, at most 100 %", () => {
@@ -239,8 +242,12 @@ function runPipeline(requests: RequestScript[]) {
 	const calibration = new CalibrationStore("/agent/pi-tps-calibration", memoryFiles(), () => 0);
 	calibration.load();
 	tracker.start(1);
+	/** Live TPS of each request, sampled right after each of its output deltas. */
+	const live: (number | undefined)[][] = [];
 	let base = 0;
 	for (const script of requests) {
+		const samples: (number | undefined)[] = [];
+		live.push(samples);
 		clock.t = base;
 		meter.turnStart();
 		meter.requestStart({ provider: "p", model: "m", ratios: calibration.ratios("p/m"), wallTime: 1 });
@@ -248,7 +255,9 @@ function runPipeline(requests: RequestScript[]) {
 		for (const [time, event] of script.events) {
 			clock.t = base + time;
 			const phase = phaseEvent(event);
-			if (phase) meter.event(phase);
+			if (!phase) continue;
+			meter.event(phase);
+			if (phase.type === "delta" && phase.stream !== "thinking") samples.push(meter.snapshot()?.liveTps);
 		}
 		clock.t = base + script.endAt;
 		const outcome = meter.end({
@@ -275,6 +284,7 @@ function runPipeline(requests: RequestScript[]) {
 	const parsed = parseRunRecord(JSON.parse(JSON.stringify(tracker.settle(false))));
 	if (!parsed) throw new Error("the run record did not survive the round trip");
 	return {
+		live,
 		records: parsed.requests,
 		average: averagesOf([parsed]),
 		ratios: calibration.ratios("p/m"),
@@ -343,10 +353,10 @@ describe("thinking models end to end", () => {
 		const [toolCall] = result.records;
 		expect(toolCall).toMatchObject({ burst: false, thinkingMs: 11_000, generationMs: 11_000 });
 		expect(toolCall?.tps).toBeCloseTo(136.36);
-		// The tool call contributes a sample of its own next to the answer's 105.
-		expect(result.records[1]?.tps).toBeCloseTo(105);
-		expect(result.average.tps).toBeCloseTo((1500 / 11 + 105) / 2);
-		expect(result.idle).toBe("✓ x̄120.7 TPS | TTFT x̄0.8s | 1 run in 14.8s | 2➤ | ↑20 | ↓230 | ⠿1.5K");
+		// The tool call contributes a sample of its own next to the answer's 100 (170 counted tokens over 1.7 s).
+		expect(result.records[1]?.tps).toBeCloseTo(100);
+		expect(result.average.tps).toBeCloseTo((1500 / 11 + 100) / 2);
+		expect(result.idle).toBe("✓ x̄118.2 TPS | TTFT x̄0.8s | 1 run in 14.8s | 2➤ | ↑20 | ↓230 | ⠿1.5K");
 		expect(result.ratios.thinking).toBeCloseTo(1480 / 60);
 	});
 
@@ -370,12 +380,55 @@ describe("thinking models end to end", () => {
 				reasoning: 400,
 			},
 		]);
-		expect(result.records[0]).toMatchObject({ thinking: "none", generatedTokens: 310 });
-		expect(result.records[0]?.tps).toBeCloseTo(310 / 3);
+		expect(result.records[0]).toMatchObject({ thinking: "none", generatedTokens: 270, generationMs: 2700 });
+		expect(result.records[0]?.tps).toBeCloseTo(100);
 		expect(result.records[1]?.tps).toBeCloseTo(80);
-		expect(result.average.tps).toBeCloseTo((310 / 3 + 80) / 2);
+		expect(result.average.tps).toBeCloseTo((100 + 80) / 2);
 		// The second request's thinking started with the request, a TTFT of 0 that the average ignores.
 		expect(result.records[1]?.ttftMs).toBe(0);
-		expect(result.idle).toBe("✓ x̄91.7 TPS | TTFT x̄0.5s | 1 run in 18.7s | 2➤ | ↑20 | ↓1.1K | ⠿1.3K");
+		expect(result.idle).toBe("✓ x̄90.0 TPS | TTFT x̄0.5s | 1 run in 18.7s | 2➤ | ↑20 | ↓1.1K | ⠿1.3K");
+	});
+});
+
+describe("the backlog after hidden or summarised thinking (measured post-thinking delivery)", () => {
+	/** Output deltas of 15 tokens, 0.2 ms apart, starting at `from`; `gapAfter` widens one gap to 1.5 ms. */
+	function read(from: number, count: number, gapAfter?: number): [number, AssistantEventLike][] {
+		const events: [number, AssistantEventLike][] = [];
+		let time = from;
+		for (let i = 0; i < count; i++) {
+			events.push([time, { type: "text_delta", delta: "x".repeat(15) }]);
+			time += i === gapAfter ? 1.5 : 0.2;
+		}
+		return events;
+	}
+
+	it("replays without a live peak, a burst, or a lowered settled rate", () => {
+		const result = runPipeline([
+			{
+				events: [
+					thinkingStart(0),
+					// One summary read: eight deltas handed over at the same time.
+					...deltas("thinking_delta", 900, 8, 0, 10),
+					thinkingEnd(6500),
+					textStart(6500),
+					...read(6500, 96, 60),
+					...read(6525, 13),
+					...read(6638, 20),
+					...deltas("text_delta", 6700, 29, 100, 15),
+				],
+				endAt: 9600,
+				output: 2500,
+			},
+		]);
+		const samples = result.live[0] ?? [];
+		const first = samples.findIndex((tps) => tps !== undefined);
+		expect(first).toBeGreaterThan(0);
+		for (const tps of samples.slice(first)) {
+			expect(tps).toBeDefined();
+			expect(tps ?? 0).toBeLessThanOrEqual(1.2 * 150);
+		}
+		const [request] = result.records;
+		expect(request).toMatchObject({ burst: false, thinkingMs: 6500 });
+		expect(request?.tps).toBeCloseTo(2500 / 9.5);
 	});
 });

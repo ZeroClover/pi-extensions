@@ -10,13 +10,14 @@ import {
 import type { BurstReason } from "./telemetry.ts";
 
 /**
- * Arrival times (ascending) and arriving estimated tokens of the output deltas (text and tool calls) of one request.
- * Thinking deltas are left out: a summary arrives in a few chunks at the provider's cadence, which is no evidence of
- * buffering.
+ * Arrival times (ascending) and arriving estimated tokens of the output deltas (text and tool calls) of one request,
+ * and whether each lies in the backlog window that opens its output phase (none when absent). Thinking deltas are
+ * left out: a summary arrives in a few chunks at the provider's cadence, which is no evidence of buffering.
  */
 export interface DeltaTimeline {
 	readonly at: readonly number[];
 	readonly tokens: readonly number[];
+	readonly backlog?: readonly boolean[];
 }
 
 /**
@@ -33,19 +34,24 @@ export function countBatches(at: readonly number[]): number {
 	return batches;
 }
 
-/** Largest share of all tokens that arrived within one cluster window. */
+/**
+ * Largest share of all tokens that arrived within one cluster window. The windows leave out the deltas of a
+ * phase-opening backlog, which were generated before the phase's first delta; the total keeps them, so leaving them
+ * out can only lower the share.
+ */
 export function largestClusterShare(timeline: DeltaTimeline): number {
-	const { at, tokens } = timeline;
+	const { at, tokens, backlog = [] } = timeline;
 	const total = tokens.reduce((sum, value) => sum + value, 0);
 	if (total <= 0) return 0;
+	const searched = (i: number) => (backlog[i] ? 0 : (tokens[i] ?? 0));
 	let best = 0;
 	let windowTokens = 0;
 	let start = 0;
 	for (let end = 0; end < at.length; end++) {
-		windowTokens += tokens[end] ?? 0;
+		windowTokens += searched(end);
 		const endAt = at[end] ?? 0;
 		while ((at[start] ?? endAt) < endAt - BURST_CLUSTER_WINDOW_MS) {
-			windowTokens -= tokens[start] ?? 0;
+			windowTokens -= searched(start);
 			start++;
 		}
 		best = Math.max(best, windowTokens);
