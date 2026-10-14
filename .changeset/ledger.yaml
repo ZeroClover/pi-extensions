@@ -10,3 +10,7 @@
   dir: packages/pi-tps
   intents:
     - heavy-horses-compare
+"@zeroclover/pi-tps@0.3.0":
+  dir: packages/pi-tps
+  intents:
+    - smart-spoons-count

@@ -1,5 +1,14 @@
 # @zeroclover/pi-tps
 
+## 0.3.0
+
+### Minor Changes
+
+- The live TPS leaves out delivery backlogs: everything that arrives in the first 300 ms of a phase or after a pause (text generated during TTFT, a thinking phase or the pause) no longer counts, so the figure no longer starts far above the steady rate and then decays. It appears 1.8 s after output starts instead of 1.5 s.
+- While a thinking phase streams, the live TPS is the thinking tokens so far over the thinking time so far, so it no longer drops towards 0 in the silences between summary chunks.
+- An answer that starts with the backlog of a thinking phase is no longer marked as burst (`cluster`); a flush after a long stall still is.
+- The settled rate of a request without a thinking phase counts its output by the same rules, so the backlog generated during TTFT no longer inflates it or the model's TPS average. Its `generatedTokens` and `generationMs` hold the counted figures (`generatedTokens` can be fractional); answers with less than 1.3 s of output have no rate of their own.
+
 ## 0.2.0
 
 ### Minor Changes
