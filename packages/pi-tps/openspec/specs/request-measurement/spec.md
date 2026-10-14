@@ -183,11 +183,11 @@ At `message_end`, when `usage.output` is a finite positive number, the settled T
 
 #### Scenario: Very short response
 - **WHEN** the thinking time is 0.3 s and the active output span is 0.4 s
-- **THEN** the request has no settled TPS of its own and does not contribute to the run TPS; its tokens still count toward the sums
+- **THEN** the request has no settled TPS of its own and does not contribute to the model's TPS average; its tokens still count toward the session totals
 
 #### Scenario: Thinking-heavy tool call
 - **WHEN** the thinking time is 3 s and the active output span is 0.4 s
-- **THEN** the request has a settled TPS over 3.4 s and contributes to the run TPS
+- **THEN** the request has a settled TPS over 3.4 s and contributes to the model's TPS average
 
 ### Requirement: Burst detection
 Output deltas (text and tool-call) less than 1 ms after the previous output delta SHALL form one arrival batch (one network read); thinking deltas are a summary or a chain of thought at the provider's cadence and SHALL NOT be burst evidence. A request SHALL be marked as burst delivery when any criterion holds: fewer than 5 output batches for a response of at least 50 output-stream tokens, where that count is, in order of precedence, `usage.output` minus a positive `usage.reasoning` (with or without a thinking phase), `usage.output` alone when no thinking phase was observed and no positive reasoning was reported, and the calibrated estimate of the output stream otherwise; a 100 ms window carrying at least 50 % of the arriving output tokens (the positive part of each delta's estimate; estimator corrections are not arrivals) while the output stream (first to last output delta) lasts more than 1 s; or a settled generation TPS above 10 000.
@@ -226,7 +226,7 @@ Output deltas (text and tool-call) less than 1 ms after the previous output delt
 
 #### Scenario: Chunked summary then a tool call
 - **WHEN** summary chunks of 20 estimated tokens arrive at 2 s, 6 s and 11 s and a 20-token tool call at 12 s, with usage output 1500 and reasoning 1480
-- **THEN** the request is not marked burst, its rate is 1500 over the 10 s thinking phase plus the output span, it contributes to the run TPS and it updates the thinking ratio
+- **THEN** the request is not marked burst, its rate is 1500 over the 10 s thinking phase plus the output span, it contributes to the model's TPS average and it updates the thinking ratio
 
 #### Scenario: Summary delivered in one piece
 - **WHEN** one summary chunk of 300 estimated tokens arrives at 8 s and 200 visible tokens then stream in 80 deltas over 4 s
@@ -260,18 +260,18 @@ A burst request SHALL report throughput, `usage.output / (end − request start)
 - **THEN** the request is not marked burst
 
 ### Requirement: Burst requests do not feed calibration or TPS aggregates
-Telemetry from a burst request SHALL be excluded from calibration updates and from the run and session TPS, while still counting toward tokens and cost.
+Telemetry from a burst request SHALL be excluded from calibration updates and from the model's TPS average. Its throughput SHALL feed the model's burst throughput average, its TTFT the model's TTFT average, and its tokens and cost the session totals.
 
 #### Scenario: Burst request ends
 - **WHEN** a burst request settles with 900 output tokens and cost 0.01
-- **THEN** run and session tokens and cost include it and run and session TPS do not
+- **THEN** the session totals include its tokens and cost, the model's TPS average is unchanged and its burst throughput average includes the request
 
 ### Requirement: Aborted requests
-When the user aborts a request, the measurement SHALL produce a partial record marked aborted, from the data observed so far. It SHALL NOT feed calibration; it SHALL count toward the run and session TPS and mean TTFT only when no settled request qualifies, and its tokens and cost SHALL count toward the sums.
+When the user aborts a request, the measurement SHALL produce a partial record marked aborted, from the data observed so far. It SHALL NOT feed calibration or any average; its tokens and cost SHALL count toward the session totals.
 
 #### Scenario: Escape during streaming
 - **WHEN** the user presses Escape 5 s into streaming
-- **THEN** the run settles as aborted, its summary shows the abort marker with the partial figures, and when the session holds settled requests its TPS and mean TTFT are unchanged by the aborted request
+- **THEN** the run settles as aborted, the idle readout starts with `✗`, the session totals include the partial tokens, and the model's averages are unchanged
 
 ### Requirement: Errored and deferred requests
 When the assistant message ends with `stopReason` `error` or `deferred`, the request SHALL produce no record and its live figures SHALL be cleared; the run continues.

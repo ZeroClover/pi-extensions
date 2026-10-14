@@ -36,7 +36,7 @@ The estimator SHALL produce a token count for text containing CJK characters tha
 - **THEN** the raw estimate is within 30 % of both reference counts
 
 ### Requirement: Calibration ratio per provider and model
-After each settled, non-burst request with a finite positive `usage.output` and a raw estimate above 50 tokens, the system SHALL update the output calibration ratio of the model that produced the response, stored under `<provider>/<response model>` and, when the requested model differs, also under `<provider>/<requested model>`. The sample SHALL be clamped to [0.25, 4] and folded into an exponential moving average with weight 0.3; the first sample SHALL set the ratio directly. A reasoning breakdown exists only when `usage.reasoning` is positive; with one, the sample compares the visible output with the output estimate, without one it compares `usage.output` with the estimate of everything streamed.
+While calibration is enabled, after each settled, non-burst request with a finite positive `usage.output` and a raw estimate above 50 tokens, the system SHALL update the output calibration ratio of the model that produced the response, stored under `<provider>/<response model>` and, when the requested model differs, also under `<provider>/<requested model>`. The sample SHALL be clamped to [0.25, 4] and folded into an exponential moving average with weight 0.3; the first sample SHALL set the ratio directly. A reasoning breakdown exists only when `usage.reasoning` is positive; with one, the sample compares the visible output with the output estimate, without one it compares `usage.output` with the estimate of everything streamed.
 
 #### Scenario: Reasoning breakdown
 - **WHEN** usage reports output 900 and reasoning 600 and the raw estimate of the streamed text output is 250
@@ -67,7 +67,7 @@ After each settled, non-burst request with a finite positive `usage.output` and 
 - **THEN** the ratio is not updated
 
 ### Requirement: Thinking calibration ratio per provider and model
-After each settled, non-burst request whose thinking was streamed, with a positive `usage.reasoning` and a raw thinking estimate above 50 tokens, the system SHALL update the model's thinking ratio under the same keys as the output ratio: the sample `usage.reasoning / raw thinking estimate` clamped to [0.25, 100] and folded into the same moving average. Hidden thinking and requests without a positive `usage.reasoning` SHALL NOT update it.
+While calibration is enabled, after each settled, non-burst request whose thinking was streamed, with a positive `usage.reasoning` and a raw thinking estimate above 50 tokens, the system SHALL update the model's thinking ratio under the same keys as the output ratio: the sample `usage.reasoning / raw thinking estimate` clamped to [0.25, 100] and folded into the same moving average. Hidden thinking and requests without a positive `usage.reasoning` SHALL NOT update it.
 
 #### Scenario: Full chain of thought
 - **WHEN** usage reports reasoning 1000 and the raw thinking estimate is 950
@@ -90,11 +90,11 @@ After each settled, non-burst request whose thinking was streamed, with a positi
 - **THEN** the thinking ratio becomes 8 and the output ratio is unchanged by that sample
 
 ### Requirement: Calibrated live counts
-Live token counts and live TPS SHALL multiply the raw output estimate by the output ratio and the raw thinking estimate by the thinking ratio of the active model; when a ratio is missing the factor SHALL be 1 and the readout SHALL mark every live figure that uses that estimate (TPS while the window holds such tokens, and the count itself) as uncalibrated.
+Live token counts and live TPS SHALL multiply the raw output estimate by the output ratio and the raw thinking estimate by the thinking ratio of the active model; when a ratio is missing, or calibration is disabled, the factor SHALL be 1. The readout SHALL NOT mark live figures as uncalibrated.
 
 #### Scenario: Uncalibrated model
 - **WHEN** the active model has no calibration entry
-- **THEN** live figures use the raw estimate and show the uncalibrated marker, also while TPS is not yet available
+- **THEN** live figures use the raw estimate and carry no marker
 
 #### Scenario: Calibrated model
 - **WHEN** the active model has output ratio 1.2 and the raw window estimate is 100 output tokens
@@ -102,10 +102,10 @@ Live token counts and live TPS SHALL multiply the raw output estimate by the out
 
 #### Scenario: Output calibrated, thinking not
 - **WHEN** the active model has an output ratio but no thinking ratio and a thinking phase is streaming
-- **THEN** the live TPS and the thinking count carry the marker and the output count does not; once only output deltas lie in the window the TPS loses the marker
+- **THEN** the thinking count and the thinking share of the live TPS use a factor of 1 and the output count uses the output ratio
 
 ### Requirement: Calibration persists across sessions
-Calibration ratios SHALL be stored in the directory `<agent-dir>/pi-tps-calibration/` as numbered versions of file format version 2 and loaded at session start. A missing directory, or a newest version in another file format, SHALL be treated as empty; a corrupt newest version SHALL produce one warning and the newest valid version SHALL be used; a failing write SHALL produce one warning per session and SHALL not interrupt measurement.
+While calibration is enabled, calibration ratios SHALL be stored in the directory `<agent-dir>/pi-tps-calibration/` as numbered versions of file format version 2 and loaded at session start. A missing directory, or a newest version in another file format, SHALL be treated as empty; a corrupt newest version SHALL produce one warning and the newest valid version SHALL be used; a failing write SHALL produce one warning per session and SHALL not interrupt measurement.
 
 #### Scenario: Restart
 - **WHEN** Pi restarts after calibrating a model
@@ -174,4 +174,15 @@ Live figures SHALL use the calibration ratio of the model that serves the reques
 
 #### Scenario: Switch to a calibrated model
 - **WHEN** the user switches from an uncalibrated model to a model with ratio 0.9
-- **THEN** the next request's live figures use 0.9 and no uncalibrated marker
+- **THEN** the next request's live figures use 0.9
+
+### Requirement: Calibration can be disabled
+When the configuration sets `calibration` to false, live figures SHALL use the raw estimates, no calibration sample SHALL be taken, and the calibration directory SHALL be neither read nor written. A request without reported usage SHALL then record its raw estimate.
+
+#### Scenario: Calibration off
+- **WHEN** `calibration` is false and ten requests settle with reported usage
+- **THEN** the live figures of every request use a factor of 1 and the calibration directory is unchanged
+
+#### Scenario: Corrupt calibration while disabled
+- **WHEN** `calibration` is false and the newest calibration version is invalid JSON
+- **THEN** no calibration warning is shown
