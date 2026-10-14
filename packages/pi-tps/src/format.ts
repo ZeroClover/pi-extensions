@@ -1,31 +1,37 @@
-import type { LabelStyle } from "./config.ts";
-import type { LiveSnapshot, RunSummary, SessionSummary, StatusSnapshot, WorkingSnapshot } from "./telemetry.ts";
+import { type ColorSpec, DEFAULT_SEPARATOR, type MetricConfig, type MetricSettings, selectColor } from "./config.ts";
+import type {
+	Averages,
+	IdleSnapshot,
+	LiveSnapshot,
+	SessionTotals,
+	StatusSnapshot,
+	WorkingSnapshot,
+} from "./telemetry.ts";
 
-/** One printed field. A segment with `tps` is coloured by the thresholds, every other one by the base colour. */
+/**
+ * How a segment is coloured: the base, burst or theme outcome colour, or a colour a threshold list resolved. The
+ * separator between fields has its own colour, applied by the renderer.
+ */
+export type Role = "base" | "burst" | "success" | "error" | { color: ColorSpec };
+
 export interface Segment {
 	text: string;
-	tps?: number;
+	role: Role;
 }
 
-/** A readout line: an optional spinner frame, followed by the fields. */
+/** The segments of one field, printed without anything between them. */
+export type Field = Segment[];
+
+/** A readout line: an optional marker (spinner frame or outcome), then the fields. */
 export interface Line {
-	indicator?: string;
-	segments: Segment[];
+	marker?: Segment;
+	fields: Field[];
 }
 
-/** Separator between fields: ` · ` reads well between words, a space suffices between symbols. */
-export const FIELD_SEPARATOR: Record<LabelStyle, string> = { text: " · ", symbols: " " };
-
-const UNKNOWN = "—";
-/** Marks a figure that relies on an uncalibrated or substituted estimate. */
-const ESTIMATED = "~";
-
-/** A field in both vocabularies; an absent form omits the field in that style. */
-interface Field {
-	text?: string;
-	symbol?: string;
-	tps?: number;
-}
+const UNKNOWN = "-";
+/** `x` with a combining macron, the sign of a mean. pi-tui counts it as one column. */
+export const MEAN = "x̄";
+const BURST = "↯";
 
 export function formatTps(value: number): string {
 	return value.toFixed(1);
@@ -77,164 +83,152 @@ export function formatCost(usd: number): string {
 	return `$${usd.toFixed(4)}`;
 }
 
-function rate(value: number, estimated: boolean): Field {
-	const marker = estimated ? ESTIMATED : "";
-	const figure = `${marker}${formatTps(value)}`;
-	return { text: `TPS ${figure} tok/s`, symbol: `»${figure}/s`, tps: value };
+/**
+ * Colour of a live figure: in relative mode with a percentage, through the relative list; otherwise through the
+ * absolute list. Undefined (the base colour) below the lowest threshold.
+ */
+function metricColor(settings: MetricSettings, percent: number | undefined, absolute: number): Role {
+	const color =
+		settings.mode === "relative" && percent !== undefined
+			? selectColor(settings.relative, percent)
+			: selectColor(settings.absolute, absolute);
+	return color ? { color } : "base";
 }
 
-const UNKNOWN_RATE: Field = { text: `TPS ${UNKNOWN}`, symbol: `»${UNKNOWN}` };
-
-function burst(value: number, estimated: boolean): Field {
-	const figure = `${estimated ? ESTIMATED : ""}${formatTps(value)}`;
-	return { text: `burst ${figure} tok/s`, symbol: `↯${figure}/s` };
+/** Live TPS as a percentage of the model's TPS average; a burst average is no reference for a streamed rate. */
+export function tpsColor(settings: MetricSettings, liveTps: number, average: Averages): Role {
+	const percent = average.tps === undefined ? undefined : (liveTps / average.tps) * 100;
+	return metricColor(settings, percent, liveTps);
 }
 
-function ttft(ms: number | undefined): Field {
-	const figure = ms === undefined ? UNKNOWN : formatDuration(ms);
-	return { text: `TTFT ${figure}`, symbol: `⇥${figure}` };
+/** TTFT as the average over the live value, so faster than usual reads high; a live 0 is the highest band. */
+export function ttftColor(settings: MetricSettings, liveMs: number, average: Averages): Role {
+	let percent: number | undefined;
+	if (average.ttftMs !== undefined) percent = liveMs > 0 ? (average.ttftMs / liveMs) * 100 : Number.POSITIVE_INFINITY;
+	return metricColor(settings, percent, liveMs / 1000);
 }
 
-function elapsed(ms: number): Field {
-	return { text: formatDuration(ms), symbol: formatDuration(ms) };
+const base = (text: string): Segment => ({ text, role: "base" });
+
+/** An average TPS: the streamed rate, else a burst throughput with `↯`. Undefined without either. */
+function averageTps(average: Averages): Segment[] | undefined {
+	if (average.tps !== undefined) return [base(`${MEAN}${formatTps(average.tps)}`)];
+	if (average.burstTps !== undefined) {
+		return [base(MEAN), { text: BURST, role: "burst" }, base(formatTps(average.burstTps))];
+	}
+	return undefined;
 }
 
-/** Input tokens with cache reads and writes folded in, and the share read from the cache. */
-function input(tokens: number, cacheRead: number, cacheWrite: number): Field | undefined {
-	const total = tokens + cacheRead + cacheWrite;
-	if (total <= 0) return undefined;
-	const figure = formatTokens(total);
-	if (cacheRead <= 0) return { text: `in ${figure}`, symbol: `↑${figure}` };
-	const share = `${Math.round((cacheRead / total) * 100)}%`;
-	return { text: `in ${figure} (cache ${share})`, symbol: `↑${figure} ↻${share}` };
+/** `48.6 (x̄52.3) TPS`: the live number and the label share the live colour, the average uses the base colour. */
+function liveTpsField(snapshot: LiveSnapshot, settings: MetricSettings): Field {
+	const { liveTps, average } = snapshot;
+	const role = liveTps === undefined ? "base" : tpsColor(settings, liveTps, average);
+	const field: Field = [{ text: liveTps === undefined ? UNKNOWN : formatTps(liveTps), role }];
+	const reference = averageTps(average);
+	if (reference) field.push(base(" ("), ...reference, base(")"));
+	field.push({ text: " TPS", role });
+	return field;
 }
 
-function output(tokens: number, estimated: boolean): Field {
-	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}`;
-	return { text: `out ${figure}`, symbol: `↓${figure}` };
+/** `TTFT 1.2s (x̄1.1s)`: the label and the live time share the live colour. */
+function liveTtftField(snapshot: LiveSnapshot, settings: MetricSettings): Field {
+	const { average } = snapshot;
+	// The wait counts up until the first content; in the waiting phase that is the elapsed time.
+	const ms = snapshot.ttftMs ?? snapshot.elapsedMs;
+	// A hidden thinking phase folds thinking time into the wait, so its colour would judge thinking as latency.
+	const role =
+		snapshot.ttftMs === undefined && snapshot.thinking === "hidden" ? "base" : ttftColor(settings, ms, average);
+	const field: Field = [{ text: `TTFT ${formatDuration(ms)}`, role }];
+	if (average.ttftMs !== undefined) field.push(base(` (${MEAN}${formatDuration(average.ttftMs)})`));
+	return field;
 }
 
-/** Thinking tokens and time; without a count (hidden thinking) the time alone. */
-function thinking(tokens: number | undefined, ms: number | undefined, estimated: boolean): Field {
+/** `x̄52.3 TPS` and `TTFT x̄1.1s`, or `-` for a metric without an average. */
+function averageFields(average: Averages): Field[] {
+	const tps = averageTps(average) ?? [base(UNKNOWN)];
+	const ttft = average.ttftMs === undefined ? UNKNOWN : `${MEAN}${formatDuration(average.ttftMs)}`;
+	return [[...tps, base(" TPS")], [base(`TTFT ${ttft}`)]];
+}
+
+const plain = (text: string): Field => [base(text)];
+
+/** Thinking count and time; without a count (hidden thinking) the time alone. */
+function thinkingField(tokens: number | undefined, ms: number | undefined): Field {
 	const duration = formatDuration(ms ?? 0);
-	if (tokens === undefined) return { text: `think ${duration}`, symbol: `✻${duration}` };
+	if (tokens === undefined) return plain(`⠿${duration}`);
 	// Below 50 ms the duration would print as 0.0s and say nothing.
 	const suffix = ms !== undefined && ms >= 50 ? ` ${duration}` : "";
-	const figure = `${estimated ? ESTIMATED : ""}${formatTokens(tokens)}${suffix}`;
-	return { text: `think ${figure}`, symbol: `✻${figure}` };
+	return plain(`⠿${formatTokens(tokens)}${suffix}`);
 }
 
-function stall(ms: number, count: number): Field {
-	const figure = `${formatDuration(ms)}×${count}`;
-	return { text: `stall ${figure}`, symbol: `‖${figure}` };
+function requestsField(count: number): Field {
+	return plain(`${count}➤`);
 }
 
-function count(label: string, value: number): Field {
-	return { text: `${label} ${value}`, symbol: `×${value}` };
-}
-
-function cost(usd: number): Field {
-	return { text: formatCost(usd), symbol: formatCost(usd) };
-}
-
-function live(snapshot: LiveSnapshot): Field[] {
-	const fields: Field[] = [];
-	if (snapshot.phase === "waiting") {
-		fields.push(ttft(snapshot.elapsedMs));
-	} else {
-		fields.push(snapshot.liveTps === undefined ? UNKNOWN_RATE : rate(snapshot.liveTps, !snapshot.tpsCalibrated));
-		// TTFT keeps counting up while a thinking phase is open and no content has arrived yet.
-		fields.push(ttft(snapshot.ttftMs ?? snapshot.elapsedMs));
-		// Live token counts are always estimates; each is marked until its kind is calibrated for the model. Before
-		// any content arrived (a hidden thinking phase) there is no count to show.
-		if (snapshot.ttftMs !== undefined) fields.push(output(snapshot.outputTokens, !snapshot.calibrated));
-		if (snapshot.thinking !== "none") {
-			fields.push(thinking(snapshot.thinkingTokens, snapshot.thinkingMs, !snapshot.thinkingCalibrated));
-		}
-	}
-	if (snapshot.request > 1) fields.push(count("req", snapshot.request));
+function live(snapshot: LiveSnapshot, metrics: MetricConfig): Field[] {
+	const fields = [liveTpsField(snapshot, metrics.tps), liveTtftField(snapshot, metrics.ttft)];
+	// Live token counts are estimates; before any content arrived (a hidden thinking phase) there is none to show.
+	if (snapshot.ttftMs !== undefined) fields.push(plain(`↓${formatTokens(snapshot.outputTokens)}`));
+	if (snapshot.thinking !== "none") fields.push(thinkingField(snapshot.thinkingTokens, snapshot.thinkingMs));
+	if (snapshot.request > 1) fields.push(requestsField(snapshot.request));
 	return fields;
 }
 
 function working(snapshot: WorkingSnapshot): Field[] {
 	return [
-		{ text: `run ${formatDuration(snapshot.elapsedMs)}`, symbol: formatDuration(snapshot.elapsedMs) },
-		count("req", snapshot.requests),
-		output(snapshot.outputTokens, snapshot.estimated),
+		...averageFields(snapshot.average),
+		plain(`run ${formatDuration(snapshot.elapsedMs)}`),
+		requestsField(snapshot.requests),
+		plain(`↓${formatTokens(snapshot.outputTokens)}`),
 	];
 }
 
-function summaryRate(summary: RunSummary | SessionSummary): Field {
-	if (summary.tps !== undefined) return rate(summary.tps, summary.estimated);
-	if (summary.burstTps !== undefined) return burst(summary.burstTps, summary.estimated);
-	return UNKNOWN_RATE;
+/** Input tokens with cache reads and writes folded in, and the share read from the cache. */
+function inputField(totals: SessionTotals): Field | undefined {
+	const total = totals.inputTokens + totals.cacheReadTokens + totals.cacheWriteTokens;
+	if (total <= 0) return undefined;
+	const share = totals.cacheReadTokens > 0 ? ` ◎${Math.round((totals.cacheReadTokens / total) * 100)}%` : "";
+	return plain(`↑${formatTokens(total)}${share}`);
 }
 
-function run(summary: RunSummary): Field[] {
+function sessionFields(totals: SessionTotals): Field[] {
 	const fields: Field[] = [
-		summary.aborted ? { text: "aborted", symbol: "✗" } : { symbol: "✓" },
-		summaryRate(summary),
-		ttft(summary.ttftMs),
-		elapsed(summary.elapsedMs),
+		plain(`${totals.runs} ${totals.runs === 1 ? "run" : "runs"} in ${formatDuration(totals.elapsedMs)}`),
+		requestsField(totals.requests),
 	];
-	const inputField = input(summary.inputTokens, summary.cacheReadTokens, summary.cacheWriteTokens);
-	if (inputField) fields.push(inputField);
-	fields.push(output(summary.visibleOutputTokens, summary.tokensEstimated));
-	if (summary.thinkingTokens > 0) {
-		fields.push(thinking(summary.thinkingTokens, summary.thinkingMs, summary.tokensEstimated));
-	} else if (summary.thinkingMs >= 50) {
-		// Hidden thinking without a reasoning count: only its time is known.
-		fields.push(thinking(undefined, summary.thinkingMs, false));
-	}
-	if (summary.stallMs > 0) fields.push(stall(summary.stallMs, summary.stallCount));
-	fields.push(count("req", summary.requests));
-	if (summary.cost !== undefined) fields.push(cost(summary.cost));
+	const input = inputField(totals);
+	if (input) fields.push(input);
+	fields.push(plain(`↓${formatTokens(totals.visibleOutputTokens)}`));
+	if (totals.thinkingTokens > 0) fields.push(plain(`⠿${formatTokens(totals.thinkingTokens)}`));
+	if (totals.cost !== undefined) fields.push(plain(formatCost(totals.cost)));
 	return fields;
 }
 
-const SESSION_MARKER: Field = { text: "session", symbol: "Σ" };
-
-function session(summary: SessionSummary): Field[] {
-	const fields: Field[] = [SESSION_MARKER, summaryRate(summary), ttft(summary.ttftMs)];
-	const inputField = input(summary.inputTokens, summary.cacheReadTokens, summary.cacheWriteTokens);
-	if (inputField) fields.push(inputField);
-	fields.push(output(summary.visibleOutputTokens, summary.tokensEstimated), count("runs", summary.runs));
-	if (summary.cost !== undefined) fields.push(cost(summary.cost));
-	return fields;
-}
-
-function fieldsOf(snapshot: StatusSnapshot): Field[] {
-	switch (snapshot.phase) {
-		case "waiting":
-		case "streaming":
-			return live(snapshot);
-		case "working":
-			return working(snapshot);
-		case "run":
-			return run(snapshot.run);
-		case "session":
-			return session(snapshot.session);
-		case "empty":
-			return [snapshot.mode === "session" ? SESSION_MARKER : { symbol: "·" }, UNKNOWN_RATE, ttft(undefined)];
-	}
+function idle(snapshot: IdleSnapshot): Line {
+	const { session } = snapshot;
+	if (!session) return { fields: averageFields({}) };
+	const marker: Segment = session.lastAborted ? { text: "✗", role: "error" } : { text: "✓", role: "success" };
+	return { marker, fields: [...averageFields(snapshot.average), ...sessionFields(session)] };
 }
 
 /**
- * Lays out the readout for a snapshot in one label style, most important fields first so that footer truncation
- * drops the tail. `indicator` is the spinner frame shown while a run is active.
+ * Lays out the readout for a snapshot, most important fields first so that footer truncation drops the tail.
+ * `indicator` is the spinner frame shown while a run is active; `metrics` colour the live TPS and TTFT.
  */
-export function formatSnapshot(snapshot: StatusSnapshot, style: LabelStyle, indicator: string): Line {
-	const segments: Segment[] = [];
-	for (const field of fieldsOf(snapshot)) {
-		const text = style === "text" ? field.text : field.symbol;
-		if (text === undefined) continue;
-		segments.push(field.tps === undefined ? { text } : { text, tps: field.tps });
+export function formatSnapshot(snapshot: StatusSnapshot, indicator: string, metrics: MetricConfig): Line {
+	switch (snapshot.phase) {
+		case "waiting":
+		case "streaming":
+			return { marker: base(indicator), fields: live(snapshot, metrics) };
+		case "working":
+			return { marker: base(indicator), fields: working(snapshot) };
+		case "idle":
+			return idle(snapshot);
 	}
-	const active = snapshot.phase === "waiting" || snapshot.phase === "streaming" || snapshot.phase === "working";
-	return active ? { indicator, segments } : { segments };
 }
 
-export function plainText(line: Line, style: LabelStyle): string {
-	const fields = line.segments.map((segment) => segment.text).join(FIELD_SEPARATOR[style]);
-	return line.indicator === undefined ? fields : `${line.indicator} ${fields}`;
+/** The line as plain text, fields joined with `separator`. */
+export function plainText(line: Line, separator = DEFAULT_SEPARATOR): string {
+	const fields = line.fields.map((field) => field.map((segment) => segment.text).join("")).join(separator);
+	return line.marker === undefined ? fields : `${line.marker.text} ${fields}`;
 }

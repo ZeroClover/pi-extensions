@@ -10,7 +10,10 @@ import {
 	STALL_GAP_MS,
 } from "./constants.ts";
 import { createDeltaEstimator, type DeltaEstimator, type StreamKind } from "./estimator.ts";
-import type { LiveSnapshot, RequestRecord, ThinkingKind } from "./telemetry.ts";
+import type { LiveSnapshot, ModelRef, RequestRecord, ThinkingKind } from "./telemetry.ts";
+
+/** Live figures of the request in flight; the caller adds the serving model's averages. */
+export type LiveFigures = Omit<LiveSnapshot, "average">;
 
 /** The model serving a request and its calibration ratios (a kind is absent while it is not calibrated). */
 export interface RequestIdentity {
@@ -107,11 +110,10 @@ export interface LiveTimeline {
 	readonly counted: readonly boolean[];
 }
 
-/** Calibrated tokens and counted time inside a window, and the kinds whose tokens contribute. */
+/** Calibrated tokens and counted time inside a window. */
 export interface WindowFigures {
 	tokens: number;
 	ms: number;
-	kinds: Set<Kind>;
 }
 
 /**
@@ -124,7 +126,7 @@ export function windowFigures(
 	windowStart: number,
 	factor: (kind: Kind) => number,
 ): WindowFigures {
-	const figures: WindowFigures = { tokens: 0, ms: 0, kinds: new Set() };
+	const figures: WindowFigures = { tokens: 0, ms: 0 };
 	for (let i = timeline.at.length - 1; i > 0; i--) {
 		const to = timeline.at[i] ?? 0;
 		if (to <= windowStart) break;
@@ -136,7 +138,6 @@ export function windowFigures(
 		const inside = to - Math.max(from, windowStart);
 		figures.tokens += length > 0 ? (tokens * inside) / length : tokens;
 		figures.ms += inside;
-		if (tokens > 0) figures.kinds.add(kind);
 	}
 	return figures;
 }
@@ -150,6 +151,8 @@ interface ThinkingBlock {
 
 interface Request {
 	context: RequestContext;
+	/** The model the request started under, before `message_start` named the serving one. */
+	selected: ModelRef;
 	startAt: number;
 	headersAt?: number;
 	messageStarted: boolean;
@@ -270,6 +273,7 @@ export class Measurement {
 		if (this.request?.messageStarted) return false;
 		this.request = {
 			context,
+			selected: { provider: context.provider, model: context.model },
 			startAt: this.clock.now(),
 			messageStarted: false,
 			estimator: this.createEstimator(),
@@ -406,14 +410,13 @@ export class Measurement {
 	}
 
 	/** Live figures of the request in flight, computed at the current time; `requestNumber` is its place in the run. */
-	snapshot(requestNumber = 1): LiveSnapshot | undefined {
+	snapshot(requestNumber = 1): LiveFigures | undefined {
 		const request = this.request;
 		if (!request) return undefined;
 		const now = this.clock.now();
 		const factor = factors(request.context);
-		const { ratios } = request.context;
 		const started = request.firstAt !== undefined || request.thinking !== "none";
-		const snapshot: LiveSnapshot = {
+		const snapshot: LiveFigures = {
 			phase: started ? "streaming" : "waiting",
 			provider: request.context.provider,
 			model: request.context.model,
@@ -421,20 +424,14 @@ export class Measurement {
 			elapsedMs: now - request.startAt,
 			outputTokens: request.rawOutput * factor.output,
 			thinking: request.thinking,
-			calibrated: ratios.output !== undefined,
-			thinkingCalibrated: ratios.thinking !== undefined,
-			tpsCalibrated: true,
 		};
 		if (request.firstAt !== undefined) snapshot.ttftMs = request.firstAt - request.startAt;
 		if (request.thinking !== "none") {
 			snapshot.thinkingMs = request.thinkingMs + (request.block ? now - request.block.startAt : 0);
 		}
 		if (request.thinking === "streamed") snapshot.thinkingTokens = request.rawThinking * factor.thinking;
-		const live = this.liveRate(request, now);
-		if (live) {
-			if (live.tps !== undefined) snapshot.liveTps = live.tps;
-			snapshot.tpsCalibrated = [...live.kinds].every((kind) => ratios[kind] !== undefined);
-		}
+		const liveTps = this.liveRate(request, now);
+		if (liveTps !== undefined) snapshot.liveTps = liveTps;
 		return snapshot;
 	}
 
@@ -443,7 +440,7 @@ export class Measurement {
 	 * counts while a thinking phase that streamed is open, or while output flows without a stall. An open thinking
 	 * block that has streamed nothing yet has no rate.
 	 */
-	private liveRate(request: Request, now: number): { tps?: number; kinds: Set<Kind> } | undefined {
+	private liveRate(request: Request, now: number): number | undefined {
 		if (request.block && !request.block.streamed) return undefined;
 		const factor = factors(request.context);
 		const figures = windowFigures(request.live, now - LIVE_WINDOW_MS, (kind) => factor[kind]);
@@ -452,8 +449,8 @@ export class Measurement {
 			const since = Math.min(now - request.lastAt, LIVE_WINDOW_MS);
 			if (request.lastKind === "thinking" || since < STALL_GAP_MS) counted += since;
 		}
-		if (counted < LIVE_MIN_COUNTED_MS) return { kinds: figures.kinds };
-		return { tps: figures.tokens / (counted / 1000), kinds: figures.kinds };
+		if (counted < LIVE_MIN_COUNTED_MS) return undefined;
+		return figures.tokens / (counted / 1000);
 	}
 
 	/** The turn's assistant message ended. Produces a record for settled and aborted requests. */
@@ -552,8 +549,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		elapsedMs: round(elapsedMs, 0),
 		// Rounded down so that a span below 1 s stays below it in the record.
 		outputMs: Math.floor(request.outputSpanMs),
-		// Unrounded, like `tps`: the aggregates divide by it, so a request, its run and a one-run session must see the
-		// same numbers to show the same rate.
+		// Unrounded, like `tps`, so that the rate can be recomputed from the record exactly.
 		generationMs,
 		generatedTokens,
 		thinking: request.thinking,
@@ -569,6 +565,8 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	if (message.responseModel !== undefined && message.responseModel !== message.model) {
 		record.responseModel = message.responseModel;
 	}
+	const { selected } = request;
+	if (selected.provider !== message.provider || selected.model !== message.model) record.requested = selected;
 	if (burstReason !== undefined) record.burstReason = burstReason;
 	if (request.firstAt !== undefined) record.ttftMs = round(request.firstAt - request.startAt, 0);
 	if (request.firstOutputAt !== undefined) record.ttftTextMs = round(request.firstOutputAt - request.startAt, 0);

@@ -8,7 +8,7 @@ Everything here is written by AI coding agents. The rules they follow live in [`
 
 | Package | npm | Description |
 |---|---|---|
-| [`pi-tps`](packages/pi-tps/) | `@zeroclover/pi-tps` | Tokens-per-second readout in the footer: live generation rate (thinking included) while streaming, one summary per agent run (TPS, TTFT, tokens, thinking time, stalls, cost), burst detection, calibrated estimates for output and thinking, text or symbol labels (`/tps`) |
+| [`pi-tps`](packages/pi-tps/) | `@zeroclover/pi-tps` | Tokens-per-second readout in the footer: live TPS and TTFT (thinking included) beside the serving model's smoothed averages, coloured relative to them or by absolute thresholds; per-model averages and session totals (runs, requests, tokens, cache share, thinking, cost) when idle; burst detection; calibrated estimates for output and thinking; `/tps` shows or hides it |
 
 ## Layout
 
