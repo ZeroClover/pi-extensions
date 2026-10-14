@@ -11,7 +11,8 @@ import {
 	type RequestContext,
 	windowFigures,
 } from "../src/measurement.ts";
-import type { RequestRecord } from "../src/telemetry.ts";
+import { RunTracker } from "../src/run.ts";
+import { parseRunRecord, type RequestRecord } from "../src/telemetry.ts";
 
 class FakeClock implements Clock {
 	t = 0;
@@ -327,7 +328,8 @@ describe("stall detection", () => {
 		expect(record.stallCount).toBe(1);
 		expect(record.stallMs).toBe(1200);
 		expect(record.outputTps).toBe(110);
-		expect(record.tps).toBe(110);
+		// The first 300 ms after the first delta and after the stall count neither tokens nor time: 140 over 1.4 s.
+		expect(record).toMatchObject({ generatedTokens: 140, generationMs: 1400, tps: 100 });
 	});
 
 	it("does not count the gap before the first delta", () => {
@@ -410,12 +412,14 @@ describe("settlement from provider usage", () => {
 	it("keeps a count without a phase as tokens without duration (reasoning count without a thinking phase)", () => {
 		start();
 		stream("text", 0, 31, 100, 10);
-		const { record } = recorded(meter.end(withReasoning(1200, 900)));
+		const { record } = recorded(meter.end(withReasoning(1210, 900)));
+		// 270 of the 310 arriving tokens count, over 2.7 s.
 		expect(record).toMatchObject({
-			generatedTokens: 300,
+			generatedTokens: 270,
+			generationMs: 2700,
 			tps: 100,
 			thinkingTokens: 900,
-			outputTokens: 1200,
+			outputTokens: 1210,
 			estimated: false,
 			burst: false,
 		});
@@ -426,9 +430,43 @@ describe("settlement from provider usage", () => {
 	it("reports the visible-output rate without thinking (no thinking)", () => {
 		start();
 		stream("text", 0, 61, 100, 10);
-		const { record } = recorded(meter.end(withReasoning(600, 0)));
-		expect(record.tps).toBe(100);
+		const { record } = recorded(meter.end(withReasoning(610, 0)));
+		expect(record).toMatchObject({ generatedTokens: 570, generationMs: 5700, tps: 100 });
 		expect(record.thinkingTokens).toBeUndefined();
+	});
+
+	it("leaves out the backlog generated during TTFT (backlog without thinking)", () => {
+		start();
+		at(0, () => meter.delta("text", "x".repeat(100)));
+		stream("text", 100, 50, 100, 10);
+		const { record } = recorded(meter.end(end(600)));
+		// All 600 tokens over the 5 s output span would give 120.
+		expect(record).toMatchObject({ generatedTokens: 470, generationMs: 4700, tps: 100, outputTps: 120 });
+	});
+
+	it("has no rate when no arriving estimate exists (no arriving estimate)", () => {
+		meter = new Measurement(clock, () => ({ add: () => 0 }));
+		const run = new RunTracker(clock);
+		run.start(1);
+		start();
+		for (let time = 0; time <= 1600; time += 400) at(time, () => meter.delta("text", " "));
+		const { record } = recorded(meter.end(end(100)));
+		expect(record).toMatchObject({ generatedTokens: 0, generationMs: 0, burst: false });
+		expect(record.tps).toBeUndefined();
+		run.add(record);
+		expect(parseRunRecord(JSON.parse(JSON.stringify(run.settle(false))))?.requests).toEqual([record]);
+	});
+
+	it("counts the backlog after thinking, generated during the thinking time (backlog after thinking)", () => {
+		start();
+		at(0, thinkingStart);
+		at(6000, thinkingEnd);
+		stream("text", 6000, 6, 20, 100);
+		stream("text", 6200, 20, 100, 20);
+		const { record } = recorded(meter.end(end(1000)));
+		expect(record).toMatchObject({ generatedTokens: 1000, burst: false });
+		expect(record.generationMs).toBeCloseTo(8100);
+		expect(record.tps).toBeCloseTo(1000 / 8.1);
 	});
 
 	it("has no settled TPS under 1 s of generation time (very short response)", () => {
@@ -453,9 +491,11 @@ describe("settlement from provider usage", () => {
 
 	it("falls back to the calibrated estimate when usage.output is missing", () => {
 		start({ ratios: { output: 2 } });
-		stream("text", 0, 11, 100, 10);
+		stream("text", 0, 21, 100, 10);
 		const outcome = recorded(meter.end(end(0)));
-		expect(outcome.record).toMatchObject({ outputTokens: 220, outputTps: 220, tps: 220, estimated: true });
+		// 170 of 210 raw tokens count over 1.7 s: 340 of the 420 estimated.
+		expect(outcome.record).toMatchObject({ outputTokens: 420, outputTps: 210, generatedTokens: 340, tps: 200 });
+		expect(outcome.record.estimated).toBe(true);
 		expect(outcome.calibration).toEqual({});
 	});
 
@@ -554,7 +594,8 @@ describe("burst requests", () => {
 
 	it("mark an implausible generation rate", () => {
 		start();
-		stream("text", 0, 11, 100, 5);
+		// 1 s of counted time: 25 000 × 50 / 70 tokens over 1 s.
+		stream("text", 0, 14, 100, 5);
 		const { record } = recorded(meter.end(end(25_000)));
 		expect(record.burstReason).toBe("rate");
 		expect(record.tps).toBeUndefined();
@@ -603,6 +644,33 @@ describe("burst requests", () => {
 		expect(outcome.calibration.thinking).toEqual({ reported: 1480, estimated: 60 });
 	});
 
+	it("leave out the backlog that opens the answer (backlog when the answer starts)", () => {
+		start();
+		at(0, thinkingStart);
+		at(3000, thinkingEnd);
+		stream("text", 3000, 20, 5, 20);
+		stream("text", 3180, 25, 80, 10);
+		const { record } = recorded(meter.end(withReasoning(1650, 1000)));
+		expect(record.burst).toBe(false);
+		expect(record.tps).toBeDefined();
+	});
+
+	it("leave out the backlog of every output phase (several short output phases)", () => {
+		start();
+		stream("text", 0, 5, 100, 10);
+		at(500, thinkingStart);
+		at(2500, thinkingEnd);
+		stream("text", 2500, 5, 100, 10);
+		expect(recorded(meter.end(withReasoning(200, 100))).record.burst).toBe(false);
+	});
+
+	it("mark a flush after normal streaming", () => {
+		start();
+		stream("text", 0, 10, 100, 10);
+		stream("text", 6900, 6, 10, 50);
+		expect(recorded(meter.end(end(400))).record.burstReason).toBe("cluster");
+	});
+
 	it("ignore a summary delivered in one piece", () => {
 		start();
 		at(8000, () => meter.delta("thinking", "x".repeat(300)));
@@ -636,8 +704,20 @@ describe("live generation rate", () => {
 		for (let time = 1250; time <= 8000; time += 250) {
 			at(time, () => meter.delta("text", "x".repeat(10)));
 			const tps = meter.snapshot()?.liveTps;
-			if (time - 1000 < 1500) expect(tps).toBeUndefined();
+			if (time - 1000 < 1800) expect(tps).toBeUndefined();
 			else expect(tps).toBeCloseTo(40);
+		}
+	});
+
+	it("leaves out a backlog spread over several reads (backlog over several reads)", () => {
+		start();
+		at(1000, () => meter.delta("text", "x"));
+		for (const time of [1020, 1040, 1070, 1100]) at(time, () => meter.delta("text", "x".repeat(50)));
+		for (let time = 1200; time <= 8000; time += 100) {
+			at(time, () => meter.delta("text", "x".repeat(10)));
+			const tps = meter.snapshot()?.liveTps;
+			if (time - 1000 < 1800) expect(tps).toBeUndefined();
+			else expect(tps).toBeCloseTo(100);
 		}
 	});
 
@@ -655,7 +735,7 @@ describe("live generation rate", () => {
 
 	it("prorates an interval straddling the window edge (delta straddling the window edge)", () => {
 		const figures = windowFigures(
-			{ at: [0, 1000], tokens: [5, 30], kinds: ["thinking", "thinking"], counted: [false, true] },
+			{ at: [0, 1000], tokens: [5, 30], kinds: ["thinking", "thinking"], counted: [false, true], floors: [300, 300] },
 			600,
 			() => 1,
 		);
@@ -663,10 +743,46 @@ describe("live generation rate", () => {
 		expect(figures.ms).toBeCloseTo(400);
 	});
 
+	it("prorates an interval straddling its backlog floor", () => {
+		const timeline = {
+			at: [0, 200, 400],
+			tokens: [50, 20, 20],
+			kinds: ["output", "output", "output"] as const,
+			counted: [false, true, true],
+			floors: [300, 300, 300],
+		};
+		expect(windowFigures(timeline, Number.NEGATIVE_INFINITY, () => 1)).toEqual({ tokens: 10, ms: 100 });
+	});
+
+	it("skips an arrival exactly at its floor without stopping at it", () => {
+		// The second phase's arrival at 1300 ends its backlog window; the first phase's interval still counts.
+		const timeline = {
+			at: [0, 500, 1000, 1300],
+			tokens: [10, 10, 10, 10],
+			kinds: ["thinking", "thinking", "output", "output"] as const,
+			counted: [false, true, false, true],
+			floors: [300, 300, 1300, 1300],
+		};
+		expect(windowFigures(timeline, Number.NEGATIVE_INFINITY, () => 1)).toEqual({ tokens: 4, ms: 200 });
+	});
+
 	it("excludes a pause from tokens and time (stall inside the window)", () => {
 		start();
 		stream("text", 0, 31, 100, 6);
 		expect(liveTpsAt(5000)).toBeCloseTo(60);
+	});
+
+	it("leaves out the flush after a stall (flush after a stall)", () => {
+		start();
+		stream("text", 0, 31, 100, 5);
+		for (const time of [5000, 5040, 5080]) {
+			at(time, () => meter.delta("text", "x".repeat(50)));
+			expect(meter.snapshot()?.liveTps).toBeCloseTo(50);
+		}
+		for (let time = 5100; time <= 12_000; time += 100) {
+			at(time, () => meter.delta("text", "x".repeat(5)));
+			expect(meter.snapshot()?.liveTps).toBeCloseTo(50);
+		}
 	});
 
 	it("keeps the rate while 1.5 s of output remain in the window (long pause)", () => {
@@ -697,56 +813,88 @@ describe("live generation rate", () => {
 			}
 		});
 
-		it("returns after 1.5 s of resumed output after a 4 s pause", () => {
-			for (const [now, available] of [
-				[LAST + 4500, false],
-				[LAST + 5000, false],
-				[LAST + 5250, false],
-				[LAST + 5500, true],
+		it("returns after 1.8 s of resumed output after a 4 s pause", () => {
+			for (const [now, expected] of [
+				[LAST + 4500, undefined],
+				[LAST + 5000, undefined],
+				[LAST + 5500, undefined],
+				[LAST + 5750, undefined],
+				// 1.45 s of resumed intervals carrying 87 tokens and 50 ms since the last delta.
+				[LAST + 5800, 58],
+				[LAST + 6000, 60],
 			] as const) {
 				clock.t = 0;
 				pauseAndResume(4000, now);
 				const tps = liveTpsAt(now);
-				if (available) expect(tps).toBeCloseTo(60);
-				else expect(tps).toBeUndefined();
+				if (expected === undefined) expect(tps).toBeUndefined();
+				else expect(tps).toBeCloseTo(expected);
 			}
 		});
 
-		it("clips every interval with the sliding window (counted time 1.0 s at 4.5 s and 5.0 s)", () => {
+		/** Counted time at `now` of the 60 tok/s stream resumed after `pauseMs`, recomputed from the window rules. */
+		function countedMsAt(pauseMs: number, now: number): number {
+			const resumedAt = LAST + pauseMs;
 			const at: number[] = [];
 			for (let time = 0; time <= LAST; time += 250) at.push(time);
-			for (let time = LAST + 4000; time <= LAST + 5000; time += 250) at.push(time);
+			for (let time = resumedAt; time <= now; time += 250) at.push(time);
 			const timeline = {
 				at,
 				tokens: at.map(() => 15),
 				kinds: at.map(() => "output" as const),
-				counted: at.map((time) => time !== 0 && time !== LAST + 4000),
+				counted: at.map((time) => time !== 0 && time !== resumedAt),
+				floors: at.map((time) => (time < resumedAt ? 300 : resumedAt + 300)),
 			};
-			const msAt = (now: number) => {
-				const delivered = at.filter((time) => time <= now);
-				const view = {
-					at: delivered,
-					tokens: timeline.tokens.slice(0, delivered.length),
-					kinds: timeline.kinds.slice(0, delivered.length),
-					counted: timeline.counted.slice(0, delivered.length),
-				};
-				const trailing = now - (delivered.at(-1) ?? now);
-				return windowFigures(view, now - 5000, () => 1).ms + (trailing < 500 ? trailing : 0);
-			};
-			expect(msAt(LAST + 4500)).toBeCloseTo(1000);
-			expect(msAt(LAST + 5000)).toBeCloseTo(1000);
+			const last = at.at(-1) ?? now;
+			const floor = timeline.floors.at(-1) ?? last;
+			const trailing = now - last < 500 ? Math.max(0, now - Math.max(last, floor)) : 0;
+			return windowFigures(timeline, now - 5000, () => 1).ms + trailing;
+		}
+
+		it("drops to 1.7 s of counted time after a 3 s pause and stays there while pre-pause output leaves", () => {
+			expect(countedMsAt(3000, LAST + 3000)).toBeCloseTo(2000);
+			for (const now of [LAST + 3300, LAST + 4000, LAST + 4500, LAST + 5000]) {
+				expect(countedMsAt(3000, now)).toBeCloseTo(1700);
+			}
+		});
+
+		it("holds 0.7 s of counted time after a 4 s pause until the pre-pause output has left", () => {
+			expect(countedMsAt(4000, LAST + 4000)).toBeCloseTo(1000);
+			for (const now of [LAST + 4300, LAST + 4500, LAST + 5000]) expect(countedMsAt(4000, now)).toBeCloseTo(700);
+			expect(countedMsAt(4000, LAST + 5500)).toBeCloseTo(1200);
 		});
 	});
 
-	it("counts calibrated thinking tokens (thinking phase)", () => {
+	it("is the cumulative calibrated thinking rate while thinking streams (thinking phase)", () => {
 		start({ ratios: { thinking: 8 } });
 		at(0, thinkingStart);
-		for (let time = 0; time <= 6000; time += 1000) {
+		at(1000, () => meter.delta("thinking", "x".repeat(20)));
+		expect(liveTpsAt(1000)).toBeUndefined();
+		expect(liveTpsAt(1499)).toBeUndefined();
+		expect(liveTpsAt(1500)).toBeCloseTo(160 / 1.5);
+		for (const time of [2000, 3000, 4000]) {
 			at(time, () => meter.delta("thinking", "x".repeat(20)));
-			const tps = meter.snapshot()?.liveTps;
-			if (time < 2000) expect(tps).toBeUndefined();
-			else expect(tps).toBeCloseTo(160);
+			expect(meter.snapshot()?.liveTps).toBeCloseTo(160);
 		}
+	});
+
+	it("does not fall to 0 between summary chunks (silence between summary chunks)", () => {
+		start({ ratios: { thinking: 8 } });
+		at(0, thinkingStart);
+		for (const time of [1000, 2000]) at(time, () => meter.delta("thinking", "x".repeat(20)));
+		expect(liveTpsAt(8000)).toBeCloseTo(40);
+	});
+
+	it("returns to the window when the thinking phase closes", () => {
+		start();
+		at(0, thinkingStart);
+		stream("thinking", 0, 31, 100, 5);
+		// Cumulative: 155 tokens over 3 s.
+		expect(meter.snapshot()?.liveTps).toBeCloseTo(155 / 3);
+		at(3000, thinkingEnd);
+		// The window: the thinking intervals after the phase's backlog window, 135 tokens over 2.7 s.
+		expect(meter.snapshot()?.liveTps).toBeCloseTo(50);
+		stream("text", 3100, 5, 100, 5);
+		expect(meter.snapshot()?.liveTps).toBeCloseTo(50);
 	});
 
 	it("is unavailable while a phase without deltas is open (hidden thinking phase)", () => {
@@ -763,7 +911,7 @@ describe("live generation rate", () => {
 		stream("text", 0, 21, 100, 5);
 		const snapshot = meter.snapshot();
 		expect(snapshot?.outputTokens).toBeCloseTo(126);
-		// 100 raw tokens in the window, 120 calibrated, over 2 s.
+		// 85 raw tokens counted after the backlog window, 102 calibrated, over 1.7 s.
 		expect(snapshot?.liveTps).toBeCloseTo(60);
 	});
 
@@ -772,7 +920,8 @@ describe("live generation rate", () => {
 		stream("thinking", 0, 21, 100, 5);
 		const snapshot = meter.snapshot();
 		expect(snapshot?.thinkingTokens).toBe(105);
-		expect(snapshot?.liveTps).toBeCloseTo(50);
+		// The cumulative thinking rate: 105 tokens over 2 s.
+		expect(snapshot?.liveTps).toBeCloseTo(52.5);
 		expect(Object.keys(snapshot ?? {})).not.toContain("calibrated");
 	});
 
@@ -781,7 +930,8 @@ describe("live generation rate", () => {
 		meter = new Measurement(clock, () => ({ add: () => increments.shift() ?? 0 }));
 		start();
 		stream("text", 0, 21, 100, 1);
-		expect(meter.snapshot()?.liveTps).toBeCloseTo(95);
+		// 16 arrivals of 10 after the backlog window and the correction's 0, over 1.7 s.
+		expect(meter.snapshot()?.liveTps).toBeCloseTo(160 / 1.7);
 	});
 
 	it("does not re-estimate earlier deltas (long stream)", () => {
@@ -819,7 +969,8 @@ describe("aborted, errored and deferred requests", () => {
 			outputTps: 51.11,
 			elapsedMs: 5500,
 		});
-		expect(outcome.record.tps).toBeCloseTo(230 / 4.5);
+		// 210 of 230 tokens count over 4.2 s.
+		expect(outcome.record.tps).toBeCloseTo(50);
 		expect(outcome.calibration).toEqual({});
 	});
 

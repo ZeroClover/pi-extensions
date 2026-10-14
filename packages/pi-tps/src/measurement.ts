@@ -2,6 +2,7 @@ import { classifyBurst } from "./burst.ts";
 import type { CalibrationRatios, CalibrationSample } from "./calibration.ts";
 import type { Clock } from "./clock.ts";
 import {
+	BACKLOG_WINDOW_MS,
 	BURST_BATCH_GAP_MS,
 	CLOCK_SKEW_THRESHOLD_MS,
 	LIVE_MIN_COUNTED_MS,
@@ -100,14 +101,17 @@ export function phaseEvent(event: AssistantEventLike): PhaseEvent | undefined {
 export type Kind = "thinking" | "output";
 
 /**
- * Arrivals of one request for the live window: arrival time, arriving raw tokens, kind, and whether the arrival is
- * attributed to the interval since the previous arrival (false for the first arrival of a phase and output stalls).
+ * Arrivals of one request for the live window: arrival time, arriving raw tokens, kind, whether the arrival is
+ * attributed to the interval since the previous arrival (false for the first arrival of a phase and output stalls),
+ * and the end of the backlog window it lies in. An uncounted arrival is an anchor and opens a backlog window of
+ * {@link BACKLOG_WINDOW_MS}; the counted arrivals after it keep the anchor's floor.
  */
 export interface LiveTimeline {
 	readonly at: readonly number[];
 	readonly tokens: readonly number[];
 	readonly kinds: readonly Kind[];
 	readonly counted: readonly boolean[];
+	readonly floors: readonly number[];
 }
 
 /** Calibrated tokens and counted time inside a window. */
@@ -117,9 +121,9 @@ export interface WindowFigures {
 }
 
 /**
- * Sums the counted intervals of a timeline that lie inside `(windowStart, now]`. An interval straddling the window
- * edge contributes the share of its tokens that matches the share of its duration inside the window. Arrivals are
- * scanned from the newest, so the cost is the number of arrivals in the window.
+ * Sums the counted intervals of a timeline that lie inside `(windowStart, now]` and after their backlog floor. An
+ * interval straddling the window edge or its floor contributes the share of its tokens that matches the share of its
+ * duration after both. Arrivals are scanned from the newest, so the cost is the number of arrivals in the window.
  */
 export function windowFigures(
 	timeline: LiveTimeline,
@@ -132,10 +136,13 @@ export function windowFigures(
 		if (to <= windowStart) break;
 		if (!timeline.counted[i]) continue;
 		const from = timeline.at[i - 1] ?? to;
+		const start = Math.max(from, windowStart, timeline.floors[i] ?? from);
+		// Inside its backlog window; older arrivals of an earlier phase may still count.
+		if (to <= start) continue;
 		const kind = timeline.kinds[i] ?? "output";
 		const tokens = (timeline.tokens[i] ?? 0) * factor(kind);
 		const length = to - from;
-		const inside = to - Math.max(from, windowStart);
+		const inside = to - start;
 		figures.tokens += length > 0 ? (tokens * inside) / length : tokens;
 		figures.ms += inside;
 	}
@@ -158,16 +165,21 @@ interface Request {
 	messageStarted: boolean;
 	estimator: DeltaEstimator;
 	/** Arrivals for the live window; deltas of one network read and phase are merged into one arrival. */
-	live: { at: number[]; tokens: number[]; kinds: Kind[]; counted: boolean[] };
-	/** Output deltas only, for burst detection: arrival time and arriving tokens. */
+	live: { at: number[]; tokens: number[]; kinds: Kind[]; counted: boolean[]; floors: number[] };
+	/**
+	 * Output deltas only, for burst detection: arrival time, arriving tokens, and whether the delta lies in the
+	 * backlog window that opens its output phase.
+	 */
 	outputAt: number[];
 	outputArrived: number[];
+	outputBacklog: boolean[];
+	/** End of the backlog window opened by the first output delta of the current output phase. */
+	outputBacklogEnd?: number;
 	/** Identifies the current phase: changes when a thinking block opens or closes. */
 	phase: number;
-	/** Phase, time and kind of the last delta. */
+	/** Phase and time of the last delta. */
 	lastPhase?: number;
 	lastAt?: number;
-	lastKind?: Kind;
 	block?: ThinkingBlock | undefined;
 	thinking: ThinkingKind;
 	/** Summed wall time of the closed thinking blocks. */
@@ -277,9 +289,10 @@ export class Measurement {
 			startAt: this.clock.now(),
 			messageStarted: false,
 			estimator: this.createEstimator(),
-			live: { at: [], tokens: [], kinds: [], counted: [] },
+			live: { at: [], tokens: [], kinds: [], counted: [], floors: [] },
 			outputAt: [],
 			outputArrived: [],
+			outputBacklog: [],
 			phase: 0,
 			thinking: "none",
 			thinkingMs: 0,
@@ -376,19 +389,24 @@ export class Measurement {
 		this.recordArrival(request, now, kind, arrived, counted, samePhase && gap < BURST_BATCH_GAP_MS);
 		request.lastPhase = request.phase;
 		request.lastAt = now;
-		request.lastKind = kind;
 
 		if (kind === "thinking") {
 			request.rawThinking += increment;
 		} else {
 			request.firstOutputAt ??= now;
 			request.rawOutput += increment;
+			// Only the backlog that opens an output phase; a flush after a stall stays burst evidence.
+			if (!samePhase) request.outputBacklogEnd = now + BACKLOG_WINDOW_MS;
 			request.outputAt.push(now);
 			request.outputArrived.push(arrived);
+			request.outputBacklog.push(now <= (request.outputBacklogEnd ?? now));
 		}
 	}
 
-	/** Deltas of one network read in the same phase are one arrival, so they share its interval. */
+	/**
+	 * Deltas of one network read in the same phase are one arrival, so they share its interval and backlog floor. An
+	 * uncounted arrival opens a backlog window; a counted one keeps the floor of the arrival before it.
+	 */
 	private recordArrival(
 		request: Request,
 		now: number,
@@ -403,10 +421,12 @@ export class Measurement {
 			live.tokens[last] = (live.tokens[last] ?? 0) + tokens;
 			return;
 		}
+		const anchorFloor = now + BACKLOG_WINDOW_MS;
 		live.at.push(now);
 		live.tokens.push(tokens);
 		live.kinds.push(kind);
 		live.counted.push(counted);
+		live.floors.push(counted ? (live.floors[last] ?? anchorFloor) : anchorFloor);
 	}
 
 	/** Live figures of the request in flight, computed at the current time; `requestNumber` is its place in the run. */
@@ -430,24 +450,30 @@ export class Measurement {
 			snapshot.thinkingMs = request.thinkingMs + (request.block ? now - request.block.startAt : 0);
 		}
 		if (request.thinking === "streamed") snapshot.thinkingTokens = request.rawThinking * factor.thinking;
-		const liveTps = this.liveRate(request, now);
+		const liveTps = this.liveRate(request, now, snapshot);
 		if (liveTps !== undefined) snapshot.liveTps = liveTps;
 		return snapshot;
 	}
 
 	/**
-	 * The live generation rate: calibrated tokens over counted time in the last 5 s. The time since the last delta
-	 * counts while a thinking phase that streamed is open, or while output flows without a stall. An open thinking
-	 * block that has streamed nothing yet has no rate.
+	 * The live generation rate. While a thinking block that has streamed is open: the calibrated thinking tokens over
+	 * the thinking time so far, because a summary's chunks carry the reasoning's volume but not its timing. Otherwise:
+	 * calibrated tokens over counted time in the last 5 s, where the time since the last delta counts, after its
+	 * backlog window, while output flows without a stall. An open thinking block that has streamed nothing yet has no
+	 * rate.
 	 */
-	private liveRate(request: Request, now: number): number | undefined {
-		if (request.block && !request.block.streamed) return undefined;
+	private liveRate(request: Request, now: number, snapshot: LiveFigures): number | undefined {
+		if (request.block) {
+			const thinkingMs = snapshot.thinkingMs ?? 0;
+			if (!request.block.streamed || thinkingMs < LIVE_MIN_COUNTED_MS) return undefined;
+			return (snapshot.thinkingTokens ?? 0) / (thinkingMs / 1000);
+		}
 		const factor = factors(request.context);
 		const figures = windowFigures(request.live, now - LIVE_WINDOW_MS, (kind) => factor[kind]);
 		let counted = figures.ms;
-		if (request.lastAt !== undefined && request.lastPhase === request.phase) {
-			const since = Math.min(now - request.lastAt, LIVE_WINDOW_MS);
-			if (request.lastKind === "thinking" || since < STALL_GAP_MS) counted += since;
+		if (request.lastAt !== undefined && request.lastPhase === request.phase && now - request.lastAt < STALL_GAP_MS) {
+			const floor = request.live.floors.at(-1) ?? request.lastAt;
+			counted += Math.max(0, now - Math.max(request.lastAt, floor));
 		}
 		if (counted < LIVE_MIN_COUNTED_MS) return undefined;
 		return figures.tokens / (counted / 1000);
@@ -493,6 +519,19 @@ function burstStreamTokens(
 	return estimatedOutput;
 }
 
+/**
+ * Generated tokens and generation time of a request without a thinking phase, counted by the live window's rules
+ * over the whole request: the backlog that arrives after the first delta and after stalls was generated in time that
+ * is not measured (TTFT, the stall). `volume` is the output without reported reasoning, whose time is hidden in TTFT;
+ * it is scaled by the counted share of the arriving estimate, so the reported count stays authoritative.
+ */
+function countedOutput(request: Request, volume: number): { generatedTokens: number; generationMs: number } {
+	const arrived = request.outputArrived.reduce((sum, tokens) => sum + tokens, 0);
+	if (arrived <= 0) return { generatedTokens: 0, generationMs: 0 };
+	const counted = windowFigures(request.live, Number.NEGATIVE_INFINITY, () => 1);
+	return { generatedTokens: (volume * counted.tokens) / arrived, generationMs: counted.ms };
+}
+
 function settle(request: Request, message: EndInput, now: number, outcome: "settled" | "aborted"): EndOutcome {
 	const { usage } = message;
 	const factor = factors(request.context);
@@ -512,9 +551,9 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		thinkingTokens = Math.min(Math.round(estimatedThinking), outputTokens);
 	}
 	const visibleOutput = Math.max(0, outputTokens - (thinkingTokens ?? 0));
-	// Without an observed phase the reasoning time is unknown (part of TTFT), so its tokens are not in the rate.
-	const generatedTokens = phaseObserved ? outputTokens : outputTokens - (breakdown ?? 0);
-	const generationMs = request.thinkingMs + request.outputSpanMs;
+	const { generatedTokens, generationMs } = phaseObserved
+		? { generatedTokens: outputTokens, generationMs: request.thinkingMs + request.outputSpanMs }
+		: countedOutput(request, outputTokens - (breakdown ?? 0));
 
 	let tps = generationMs >= MIN_SETTLED_SPAN_MS ? generatedTokens / (generationMs / 1000) : undefined;
 	let outputTps =
@@ -527,7 +566,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	const burstReason =
 		outcome === "settled"
 			? classifyBurst(
-					{ at: request.outputAt, tokens: request.outputArrived },
+					{ at: request.outputAt, tokens: request.outputArrived, backlog: request.outputBacklog },
 					burstStreamTokens(reportedOutput, breakdown, request.thinking, estimatedOutput),
 					tps,
 				)
