@@ -1,14 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { summarizeRun, summarizeSession } from "../src/aggregate.ts";
+import { sessionTotals } from "../src/aggregate.ts";
+import { ModelAverages } from "../src/averages.ts";
 import { largestClusterShare } from "../src/burst.ts";
 import { CALIBRATION_KINDS, CalibrationStore } from "../src/calibration.ts";
 import type { Clock } from "../src/clock.ts";
+import { defaultConfig } from "../src/config.ts";
 import { createDeltaEstimator } from "../src/estimator.ts";
 import type { FileLayer } from "../src/files.ts";
 import { formatSnapshot, formatTps, plainText } from "../src/format.ts";
 import { type AssistantEventLike, type EndInput, Measurement, phaseEvent } from "../src/measurement.ts";
 import { RunTracker } from "../src/run.ts";
-import { parseRunRecord, type RequestRecord, type RunRecord } from "../src/telemetry.ts";
+import { parseRunRecord, type RequestRecord, type RunRecord, type StatusSnapshot } from "../src/telemetry.ts";
 
 class FakeClock implements Clock {
 	t = 0;
@@ -24,6 +26,24 @@ function end(output: number): EndInput {
 		model: "m",
 		usage: { input: 10, output, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
 	};
+}
+
+const METRICS = { tps: defaultConfig().tps, ttft: defaultConfig().ttft };
+
+/** The averages of `p/m` replayed from the runs, as a session start rebuilds them. */
+function averagesOf(runs: readonly RunRecord[]) {
+	const averages = new ModelAverages();
+	averages.rebuild(runs.flatMap((run) => run.requests));
+	return averages.of("p", "m");
+}
+
+/** The idle readout of a branch holding these runs, with `p/m` as the current model. */
+function idleLine(runs: readonly RunRecord[]): string {
+	const session = sessionTotals(runs);
+	const snapshot: StatusSnapshot = session
+		? { phase: "idle", average: averagesOf(runs), session }
+		: { phase: "idle", average: {} };
+	return plainText(formatSnapshot(snapshot, "", METRICS));
 }
 
 /** Runs one request through Measurement and RunTracker and returns the run as persisted and read back. */
@@ -54,22 +74,22 @@ function evenStream(clock: FakeClock, spanMs: number) {
 	};
 }
 
-describe("request settlement and run aggregation agree after persistence (span just under one second)", () => {
+describe("request settlement and the TPS average agree after persistence (span just under one second)", () => {
 	it.each([
 		[999.49, false],
 		[999.5, false],
 		[999.99, false],
 		[1000, true],
-	])("a %f ms active span contributes to the run TPS: %s", (spanMs, contributes) => {
+	])("a %f ms active span contributes to the model's TPS average: %s", (spanMs, contributes) => {
 		const clock = new FakeClock();
 		const run = persistedRun(clock, evenStream(clock, spanMs), 110);
 		const request: RequestRecord | undefined = run.requests[0];
 		expect(request?.tps !== undefined).toBe(contributes);
-		expect(summarizeRun(run).tps !== undefined).toBe(contributes);
+		expect(averagesOf([run]).tps !== undefined).toBe(contributes);
 	});
 });
 
-describe("a request, its run and a one-run session show the same rate (non-integer generation time)", () => {
+describe("a request and the average of a model with one request show the same rate (non-integer generation time)", () => {
 	/** A hidden thinking phase from 0 to `thinkingEndAt`, then one 10-token tool-call delta; output 100, reasoning 90. */
 	function hiddenThenToolCall(thinkingEndAt: number, toolCallAt: number) {
 		const clock = new FakeClock();
@@ -94,8 +114,7 @@ describe("a request, its run and a one-run session show the same rate (non-integ
 		tracker.add(outcome.record);
 		const run = parseRunRecord(JSON.parse(JSON.stringify(tracker.settle(false))));
 		if (!run) throw new Error("the run record did not survive the round trip");
-		const session = summarizeSession([run]);
-		return { request: outcome.record.tps, run: summarizeRun(run).tps, session: session?.tps };
+		return { request: outcome.record.tps, average: averagesOf([run]).tps };
 	}
 
 	it.each([
@@ -106,13 +125,12 @@ describe("a request, its run and a one-run session show the same rate (non-integ
 	])("thinking until %f ms, tool call at %f ms", (thinkingEndAt, toolCallAt) => {
 		const rates = hiddenThenToolCall(thinkingEndAt, toolCallAt);
 		expect(rates.request).toBeDefined();
-		expect(rates.run).toBe(rates.request);
-		expect(rates.session).toBe(rates.request);
-		expect(formatTps(rates.run ?? 0)).toBe("99.9");
+		expect(rates.average).toBe(rates.request);
+		expect(formatTps(rates.average ?? 0)).toBe("99.9");
 	});
 
 	it("keeps a generation time just under one second out after persistence", () => {
-		expect(hiddenThenToolCall(999.6, 999.6)).toEqual({ request: undefined, run: undefined, session: undefined });
+		expect(hiddenThenToolCall(999.6, 999.6)).toEqual({ request: undefined, average: undefined });
 	});
 });
 
@@ -140,7 +158,7 @@ describe("estimator corrections are not token arrivals (estimator correction at 
 	it("does not mark evenly arriving deltas as burst when the last one lowers the estimate", () => {
 		const run = settleWithRealEstimator(["123456", "789012", "345678", "90", "n"], 30);
 		expect(run.requests[0]).toMatchObject({ burst: false, outputMs: 1200, outputTps: 25, tps: 25 });
-		expect(summarizeRun(run).tps).toBe(25);
+		expect(averagesOf([run]).tps).toBe(25);
 	});
 
 	it("keeps the cluster share a share of arriving tokens, at most 100 %", () => {
@@ -153,8 +171,8 @@ describe("estimator corrections are not token arrivals (estimator correction at 
 	});
 });
 
-describe("estimate provenance reaches the readout (estimated summary)", () => {
-	it("marks a burst-only run whose tokens come from the estimate", () => {
+describe("an estimated burst reaches the idle readout without a marker (uncalibrated estimate)", () => {
+	it("shows the burst average of a run whose tokens come from the estimate", () => {
 		const clock = new FakeClock();
 		const run = persistedRun(
 			clock,
@@ -165,11 +183,7 @@ describe("estimate provenance reaches the readout (estimated summary)", () => {
 			0,
 		);
 		expect(run.requests[0]).toMatchObject({ burst: true, estimated: true });
-		const snapshot = { phase: "run" as const, run: summarizeRun(run) };
-		expect(plainText(formatSnapshot(snapshot, "text", ""), "text")).toBe(
-			"burst ~225.0 tok/s · TTFT 4.0s · 4.0s · in 10 · out ~900 · req 1",
-		);
-		expect(plainText(formatSnapshot(snapshot, "symbols", ""), "symbols")).toBe("✓ ↯~225.0/s ⇥4.0s 4.0s ↑10 ↓~900 ×1");
+		expect(idleLine([run])).toBe("✓ x̄↯225.0 TPS | TTFT x̄4.0s | 1 run in 4.0s | 1➤ | ↑10 | ↓900");
 	});
 });
 
@@ -216,7 +230,7 @@ function deltas(
 
 /**
  * Feeds the requests of one run through the whole pipeline: phase events, measurement, burst detection, the run
- * tracker, calibration, persistence and the summaries. One raw token per character.
+ * tracker, calibration, persistence, the averages and the session totals. One raw token per character.
  */
 function runPipeline(requests: RequestScript[]) {
 	const clock = new FakeClock();
@@ -260,16 +274,11 @@ function runPipeline(requests: RequestScript[]) {
 	}
 	const parsed = parseRunRecord(JSON.parse(JSON.stringify(tracker.settle(false))));
 	if (!parsed) throw new Error("the run record did not survive the round trip");
-	const run = summarizeRun(parsed);
-	const session = summarizeSession([parsed]);
-	if (!session) throw new Error("no session");
 	return {
 		records: parsed.requests,
-		run,
-		session,
+		average: averagesOf([parsed]),
 		ratios: calibration.ratios("p/m"),
-		summary: plainText(formatSnapshot({ phase: "run", run }, "text", ""), "text"),
-		sessionLine: plainText(formatSnapshot({ phase: "session", session }, "text", ""), "text"),
+		idle: idleLine([parsed]),
 	};
 }
 
@@ -290,11 +299,9 @@ describe("thinking models end to end", () => {
 			},
 		]);
 		expect(result.records[0]).toMatchObject({ thinking: "streamed", thinkingMs: 4000, outputMs: 5000, burst: false });
-		expect(result.summary).toBe("TPS 91.1 tok/s · TTFT 0.5s · 10.0s · in 10 · out ~410 · think ~410 4.0s · req 1");
-		expect(result.sessionLine).toBe("session · TPS 91.1 tok/s · TTFT 0.5s · in 10 · out ~410 · runs 1");
-		// The request, its run and a one-run session show the same rate.
-		expect(result.run.tps).toBeCloseTo(result.records[0]?.tps ?? 0, 1);
-		expect(result.session.tps).toBe(result.run.tps);
+		expect(result.idle).toBe("✓ x̄91.1 TPS | TTFT x̄0.5s | 1 run in 10.0s | 1➤ | ↑10 | ↓410 | ⠿410");
+		// The first sample is the average.
+		expect(result.average.tps).toBe(result.records[0]?.tps);
 		// The output ratio compares the total; no thinking ratio without a reasoning count.
 		expect(result.ratios.output).toBeCloseTo(820 / 818);
 		expect(result.ratios.thinking).toBeUndefined();
@@ -310,8 +317,7 @@ describe("thinking models end to end", () => {
 			},
 		]);
 		expect(result.records[0]).toMatchObject({ thinking: "hidden", thinkingMs: 6000, burst: false });
-		expect(result.summary).toBe("TPS 134.4 tok/s · TTFT 6.4s · 10.0s · in 10 · out 310 · think 900 6.0s · req 1");
-		expect(result.session.tps).toBe(result.run.tps);
+		expect(result.idle).toBe("✓ x̄134.4 TPS | TTFT x̄6.4s | 1 run in 10.0s | 1➤ | ↑10 | ↓310 | ⠿900");
 		expect(result.ratios).toEqual({ output: 1, thinking: undefined });
 	});
 
@@ -337,9 +343,10 @@ describe("thinking models end to end", () => {
 		const [toolCall] = result.records;
 		expect(toolCall).toMatchObject({ burst: false, thinkingMs: 11_000, generationMs: 11_000 });
 		expect(toolCall?.tps).toBeCloseTo(136.36);
-		// The tool call contributes: the answer alone would rate 105.
-		expect(result.run.tps).toBeCloseTo(1710 / 13);
-		expect(result.summary).toBe("TPS 131.5 tok/s · TTFT 0.8s · 14.8s · in 20 · out 230 · think 1.5K 11.0s · req 2");
+		// The tool call contributes a sample of its own next to the answer's 105.
+		expect(result.records[1]?.tps).toBeCloseTo(105);
+		expect(result.average.tps).toBeCloseTo((1500 / 11 + 105) / 2);
+		expect(result.idle).toBe("✓ x̄120.7 TPS | TTFT x̄0.8s | 1 run in 14.8s | 2➤ | ↑20 | ↓230 | ⠿1.5K");
 		expect(result.ratios.thinking).toBeCloseTo(1480 / 60);
 	});
 
@@ -365,8 +372,10 @@ describe("thinking models end to end", () => {
 		]);
 		expect(result.records[0]).toMatchObject({ thinking: "none", generatedTokens: 310 });
 		expect(result.records[0]?.tps).toBeCloseTo(310 / 3);
-		expect(result.run.tps).toBeCloseTo(1510 / 18);
-		expect(result.session.tps).toBe(result.run.tps);
-		expect(result.summary).toBe("TPS 83.9 tok/s · TTFT 0.3s · 18.7s · in 20 · out 1.1K · think 1.3K 5.0s · req 2");
+		expect(result.records[1]?.tps).toBeCloseTo(80);
+		expect(result.average.tps).toBeCloseTo((310 / 3 + 80) / 2);
+		// The second request's thinking started with the request, a TTFT of 0 that the average ignores.
+		expect(result.records[1]?.ttftMs).toBe(0);
+		expect(result.idle).toBe("✓ x̄91.7 TPS | TTFT x̄0.5s | 1 run in 18.7s | 2➤ | ↑20 | ↓1.1K | ⠿1.3K");
 	});
 });

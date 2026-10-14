@@ -9,10 +9,12 @@ import {
 	isCalibratable,
 	nextEntry,
 	nextRatio,
+	openCalibration,
 	parseCalibration,
 	WRITER_RETENTION_MS,
 } from "../src/calibration.ts";
 import { type FileLayer, nodeFiles } from "../src/files.ts";
+import { Measurement } from "../src/measurement.ts";
 
 const DIR = "/agent/pi-tps-calibration";
 
@@ -548,5 +550,80 @@ describe("CalibrationStore", () => {
 		const calibration = store(dir);
 		for (let i = 1; i <= 6; i++) calibration.update("a/b", "output", { reported: 100 + i, estimated: 100 }, i);
 		expect(dir.list(DIR).sort()).toEqual(["0000000004.json", "0000000005.json", "0000000006.json"]);
+	});
+});
+
+/** A directory that counts every access. */
+class WatchedDir extends MemoryDir {
+	accesses = 0;
+
+	override read(path: string): string | undefined {
+		this.accesses++;
+		return super.read(path);
+	}
+
+	override list(dir: string): string[] {
+		this.accesses++;
+		return super.list(dir);
+	}
+
+	override publish(path: string, content: string): boolean {
+		this.accesses++;
+		return super.publish(path, content);
+	}
+
+	override remove(path: string): void {
+		this.accesses++;
+		super.remove(path);
+	}
+}
+
+describe("openCalibration", () => {
+	it("neither reads nor writes while disabled and uses a factor of 1 (calibration off)", () => {
+		const dir = new WatchedDir();
+		dir.files.set(version(1), file({ "p/m": { ratio: 2, samples: 5, updatedAt: 1 } }));
+		const before = new Map(dir.files);
+		const { calibration, warning } = openCalibration(false, DIR, dir);
+		expect(warning).toBeUndefined();
+		let t = 0;
+		const meter = new Measurement({ now: () => t }, () => ({ add: (_stream, delta) => delta.length }));
+		for (let i = 0; i < 10; i++) {
+			meter.turnStart();
+			meter.requestStart({ provider: "p", model: "m", ratios: calibration.ratios("p/m"), wallTime: 1 });
+			meter.messageStart();
+			for (let d = 0; d < 21; d++) {
+				t = i * 10_000 + d * 100;
+				meter.delta("text", "x".repeat(10));
+			}
+			expect(meter.snapshot()?.outputTokens).toBe(210);
+			const outcome = meter.end({
+				stopReason: "stop",
+				provider: "p",
+				model: "m",
+				usage: { input: 10, output: 420, cacheRead: 0, cacheWrite: 0, cost: { total: 0 } },
+			});
+			if (outcome.kind !== "recorded") throw new Error(`expected a record, got ${outcome.kind}`);
+			const sample = outcome.calibration.output;
+			expect(sample).toBeDefined();
+			if (sample) expect(calibration.update("p/m", "output", sample, t)).toBeUndefined();
+		}
+		expect(calibration.ratios("p/m")).toEqual({});
+		expect(calibration.close()).toBeUndefined();
+		expect(dir.accesses).toBe(0);
+		expect(dir.files).toEqual(before);
+	});
+
+	it("shows no warning for a corrupt newest version while disabled (corrupt calibration while disabled)", () => {
+		const dir = new WatchedDir();
+		dir.files.set(version(1), "{not json");
+		expect(openCalibration(false, DIR, dir).warning).toBeUndefined();
+		expect(dir.accesses).toBe(0);
+		expect(openCalibration(true, DIR, dir).warning).toContain("invalid JSON");
+	});
+
+	it("loads the store while enabled", () => {
+		const dir = new MemoryDir();
+		dir.files.set(version(1), file({ "p/m": { ratio: 1.5, samples: 1, updatedAt: 1 } }));
+		expect(openCalibration(true, DIR, dir).calibration.ratios("p/m").output).toBe(1.5);
 	});
 });

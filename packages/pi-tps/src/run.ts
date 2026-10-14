@@ -1,4 +1,4 @@
-import { tokensEstimated, visibleOutput } from "./aggregate.ts";
+import { visibleOutput } from "./aggregate.ts";
 import type { Clock } from "./clock.ts";
 import { type RequestRecord, type RunRecord, TELEMETRY_VERSION, type WorkingSnapshot } from "./telemetry.ts";
 
@@ -37,8 +37,8 @@ export class RunTracker {
 		this.run?.requests.push(record);
 	}
 
-	/** Progress of the active run between requests. */
-	snapshot(): WorkingSnapshot | undefined {
+	/** Progress of the active run between requests; the caller adds the current model's averages. */
+	snapshot(): Omit<WorkingSnapshot, "average"> | undefined {
 		const run = this.run;
 		if (!run) return undefined;
 		return {
@@ -46,7 +46,6 @@ export class RunTracker {
 			elapsedMs: this.clock.now() - run.startAt,
 			requests: run.requests.length,
 			outputTokens: run.requests.reduce((sum, record) => sum + visibleOutput(record), 0),
-			estimated: run.requests.some(tokensEstimated),
 		};
 	}
 

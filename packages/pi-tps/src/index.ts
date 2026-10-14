@@ -5,17 +5,19 @@ import {
 	type ExtensionUIContext,
 	getAgentDir,
 } from "@earendil-works/pi-coding-agent";
-import { runsFromEntries, summarizeRun, summarizeSession } from "./aggregate.ts";
+import { runsFromEntries, sessionTotals } from "./aggregate.ts";
+import { ModelAverages } from "./averages.ts";
 import {
 	CALIBRATION_DIR_NAME,
 	CALIBRATION_KINDS,
-	CalibrationStore,
 	calibrationKey,
 	calibrationKeys,
+	openCalibration,
+	type SessionCalibration,
 } from "./calibration.ts";
 import { monotonicClock } from "./clock.ts";
-import { parseTpsCommand, TPS_USAGE, tpsCompletions } from "./command.ts";
-import { CONFIG_FILE_NAME, parseConfig, resolveThresholds, type Threshold, type TpsConfig } from "./config.ts";
+import { parseTpsCommand, TPS_USAGE } from "./command.ts";
+import { CONFIG_FILE_NAME, type MetricConfig, parseConfig, resolveMetrics, type TpsConfig } from "./config.ts";
 import { STATUS_KEY } from "./constants.ts";
 import { errorMessage, nodeFiles } from "./files.ts";
 import { formatSnapshot } from "./format.ts";
@@ -23,12 +25,13 @@ import { Measurement, phaseEvent } from "./measurement.ts";
 import { renderLine, StatusWriter } from "./render.ts";
 import { RunTracker } from "./run.ts";
 import {
+	type Averages,
+	type ModelRef,
 	REQUEST_CHANNEL,
 	RUN_CHANNEL,
 	type RunRecord,
 	STATUS_CHANNEL,
 	type StatusSnapshot,
-	type SummaryMode,
 	TELEMETRY_CHANNEL,
 	TELEMETRY_CUSTOM_TYPE,
 } from "./telemetry.ts";
@@ -37,19 +40,21 @@ import { scheduleInterval, Ticker } from "./ticker.ts";
 /** Session-scoped state, created on `session_start` and dropped on `session_shutdown`. */
 interface Runtime {
 	config: TpsConfig;
-	calibration: CalibrationStore;
+	calibration: SessionCalibration;
 	meter: Measurement;
 	run: RunTracker;
 	ticker: Ticker;
 	writer: StatusWriter;
 	tui: boolean;
 	visible: boolean;
-	mode: SummaryMode;
 	/** Settled runs: the current branch's when persisting, else this runtime's. */
 	runs: RunRecord[];
-	activeModel: { provider: string; id: string } | undefined;
-	/** Thresholds of the model serving the request in flight. */
-	liveThresholds: Threshold[];
+	/** Per-model averages over the request records of `runs` and of the active run. */
+	averages: ModelAverages;
+	/** The selected model: the model a new request starts under. */
+	activeModel: ModelRef | undefined;
+	/** Colour settings of the model serving the request in flight. */
+	liveMetrics: MetricConfig;
 	/** UI of the handler that started the run; held only while the ticker runs. */
 	tickUi: ExtensionUIContext | undefined;
 	unsubscribeRequest: () => void;
@@ -68,35 +73,19 @@ function loadConfig(path: string): { config: TpsConfig; warnings: string[] } {
 export default function (pi: ExtensionAPI): void {
 	let runtime: Runtime | undefined;
 
-	function snapshotOf(rt: Runtime): StatusSnapshot {
-		const live = rt.meter.snapshot(rt.run.requestCount + 1);
-		if (live) return live;
-		const working = rt.run.snapshot();
-		if (working) return working;
-		if (rt.mode === "session") {
-			const session = summarizeSession(rt.runs);
-			return session ? { phase: "session", session } : { phase: "empty", mode: rt.mode };
-		}
-		const last = rt.runs.at(-1);
-		return last ? { phase: "run", run: summarizeRun(last) } : { phase: "empty", mode: rt.mode };
+	function currentAverages(rt: Runtime): Averages {
+		const current = rt.averages.current(rt.activeModel);
+		return current ? rt.averages.of(current.provider, current.model) : {};
 	}
 
-	function thresholdsFor(rt: Runtime, snapshot: StatusSnapshot): readonly Threshold[] {
-		switch (snapshot.phase) {
-			case "waiting":
-			case "streaming":
-				return rt.liveThresholds;
-			case "run":
-			case "session": {
-				const summary = snapshot.phase === "run" ? snapshot.run : snapshot.session;
-				if (summary.provider !== undefined && summary.model !== undefined) {
-					return resolveThresholds(rt.config, summary.provider, summary.model);
-				}
-				return rt.config.thresholds;
-			}
-			default:
-				return rt.config.thresholds;
-		}
+	function snapshotOf(rt: Runtime): StatusSnapshot {
+		const live = rt.meter.snapshot(rt.run.requestCount + 1);
+		if (live) return { ...live, average: rt.averages.of(live.provider, live.model) };
+		const working = rt.run.snapshot();
+		if (working) return { ...working, average: currentAverages(rt) };
+		const session = sessionTotals(rt.runs);
+		const average = currentAverages(rt);
+		return session ? { phase: "idle", average, session } : { phase: "idle", average };
 	}
 
 	/** Broadcasts the current snapshot and, in the TUI, writes it to the footer. */
@@ -111,8 +100,7 @@ export default function (pi: ExtensionAPI): void {
 		}
 		const { frames, enabled } = rt.config.animation;
 		const indicator = (enabled ? frames[rt.ticker.currentFrame % frames.length] : frames[0]) ?? "";
-		const line = formatSnapshot(snapshot, rt.config.labels, indicator);
-		const text = renderLine(line, rt.config.labels, ui.theme, rt.config.baseColor, thresholdsFor(rt, snapshot));
+		const text = renderLine(formatSnapshot(snapshot, indicator, rt.liveMetrics), ui.theme, rt.config);
 		rt.writer.set(text, write);
 	}
 
@@ -123,6 +111,7 @@ export default function (pi: ExtensionAPI): void {
 
 	function rebuild(rt: Runtime, ctx: ExtensionContext): void {
 		rt.runs = runsFromEntries(ctx.sessionManager.getBranch());
+		rt.averages.rebuild(rt.runs.flatMap((run) => run.requests));
 	}
 
 	pi.on("session_start", (_event, ctx) => {
@@ -132,8 +121,11 @@ export default function (pi: ExtensionAPI): void {
 		}
 		const agentDir = getAgentDir();
 		const { config, warnings } = loadConfig(join(agentDir, CONFIG_FILE_NAME));
-		const calibration = new CalibrationStore(join(agentDir, CALIBRATION_DIR_NAME), nodeFiles);
-		const calibrationWarning = calibration.load();
+		const { calibration, warning: calibrationWarning } = openCalibration(
+			config.calibration,
+			join(agentDir, CALIBRATION_DIR_NAME),
+			nodeFiles,
+		);
 		if (calibrationWarning) warnings.push(calibrationWarning);
 		for (const warning of warnings) ctx.ui.notify(warning, "warning");
 
@@ -146,10 +138,10 @@ export default function (pi: ExtensionAPI): void {
 			writer: new StatusWriter(),
 			tui: ctx.mode === "tui",
 			visible: config.enabled,
-			mode: config.summaryMode,
 			runs: [],
-			activeModel: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
-			liveThresholds: config.thresholds,
+			averages: new ModelAverages(),
+			activeModel: ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined,
+			liveMetrics: { tps: config.tps, ttft: config.ttft },
 			tickUi: undefined,
 			unsubscribeRequest: pi.events.on(REQUEST_CHANNEL, () => {
 				if (runtime === rt) pi.events.emit(STATUS_CHANNEL, snapshotOf(rt));
@@ -183,8 +175,11 @@ export default function (pi: ExtensionAPI): void {
 		publish(rt, ctx.ui);
 	});
 
-	pi.on("model_select", (event) => {
-		if (runtime) runtime.activeModel = { provider: event.model.provider, id: event.model.id };
+	pi.on("model_select", (event, ctx) => {
+		const rt = runtime;
+		if (!rt) return;
+		rt.activeModel = { provider: event.model.provider, model: event.model.id };
+		publish(rt, ctx.ui);
 	});
 
 	pi.on("agent_start", (_event, ctx) => {
@@ -231,9 +226,9 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_provider_request", (_event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
-		const model = rt.activeModel ?? (ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined);
+		const model = rt.activeModel ?? (ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined);
 		const provider = model?.provider ?? "unknown";
-		const id = model?.id ?? "unknown";
+		const id = model?.model ?? "unknown";
 		const started = rt.meter.requestStart({
 			provider,
 			model: id,
@@ -241,7 +236,7 @@ export default function (pi: ExtensionAPI): void {
 			wallTime: Date.now(),
 		});
 		if (!started) return;
-		rt.liveThresholds = resolveThresholds(rt.config, provider, id);
+		rt.liveMetrics = resolveMetrics(rt.config, provider, id);
 		publish(rt, ctx.ui);
 	});
 
@@ -259,7 +254,7 @@ export default function (pi: ExtensionAPI): void {
 			model: message.model,
 			ratios: rt.calibration.ratios(calibrationKey(message.provider, message.model)),
 		});
-		rt.liveThresholds = resolveThresholds(rt.config, message.provider, message.model);
+		rt.liveMetrics = resolveMetrics(rt.config, message.provider, message.model);
 	});
 
 	pi.on("message_update", (event) => {
@@ -278,6 +273,8 @@ export default function (pi: ExtensionAPI): void {
 		if (outcome.kind === "recorded") {
 			const { record } = outcome;
 			rt.run.add(record);
+			// Before publishing, so that the working readout's averages include the request.
+			rt.averages.fold(record);
 			pi.events.emit(TELEMETRY_CHANNEL, record);
 			for (const kind of CALIBRATION_KINDS) {
 				const sample = outcome.calibration[kind];
@@ -292,23 +289,15 @@ export default function (pi: ExtensionAPI): void {
 	});
 
 	pi.registerCommand("tps", {
-		description: "Toggle the TPS readout; /tps mode [last|session] switches the idle summary",
-		getArgumentCompletions: tpsCompletions,
+		description: "Show or hide the TPS readout",
 		handler: async (args, ctx) => {
 			const rt = runtime;
 			if (!rt) return;
-			const command = parseTpsCommand(args);
-			switch (command.kind) {
-				case "invalid":
-					ctx.ui.notify(TPS_USAGE, "warning");
-					return;
-				case "toggle":
-					rt.visible = !rt.visible;
-					break;
-				case "mode":
-					rt.mode = command.mode ?? (rt.mode === "last" ? "session" : "last");
-					break;
+			if (parseTpsCommand(args).kind === "invalid") {
+				ctx.ui.notify(TPS_USAGE, "warning");
+				return;
 			}
+			rt.visible = !rt.visible;
 			publish(rt, ctx.ui);
 		},
 	});

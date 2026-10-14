@@ -1,11 +1,8 @@
-import { MIN_SETTLED_SPAN_MS } from "./constants.ts";
 import {
-	type Aggregate,
 	parseRunRecord,
 	type RequestRecord,
 	type RunRecord,
-	type RunSummary,
-	type SessionSummary,
+	type SessionTotals,
 	TELEMETRY_CUSTOM_TYPE,
 } from "./telemetry.ts";
 
@@ -32,112 +29,32 @@ export function visibleOutput(record: RequestRecord): number {
 	return Math.max(0, record.outputTokens - (record.thinkingTokens ?? 0));
 }
 
-/** Whether the request's thinking tokens are the calibrated estimate of streamed thinking rather than usage. */
-export function thinkingEstimated(record: RequestRecord): boolean {
-	return record.thinking === "streamed" && record.thinkingTokens !== undefined && !((record.reasoningTokens ?? 0) > 0);
-}
-
-/** Whether a token count derived from the record (visible output or thinking) relies on the estimate. */
-export function tokensEstimated(record: RequestRecord): boolean {
-	return record.estimated || thinkingEstimated(record);
-}
-
-/**
- * Whether a request's generation rate describes genuine streaming: not burst, and with at least 1 s of generation
- * time. Shorter times (typically tool-call requests without thinking) are dominated by tokens the provider counts but
- * never streams, such as tool-call framing, and would inflate the aggregate.
- */
-function hasRate(record: RequestRecord): boolean {
-	return !record.burst && record.generationMs >= MIN_SETTLED_SPAN_MS;
-}
-
-/** Summed generated tokens over summed generation time, with whether any of the requests relied on the estimate. */
-function weightedRate(records: readonly RequestRecord[]): { tps: number; estimated: boolean } | undefined {
-	let tokens = 0;
-	let ms = 0;
-	let estimated = false;
-	for (const record of records) {
-		tokens += record.generatedTokens;
-		ms += record.generationMs;
-		if (record.estimated) estimated = true;
-	}
-	return ms > 0 ? { tps: tokens / (ms / 1000), estimated } : undefined;
-}
-
-function meanTtft(records: readonly RequestRecord[]): number | undefined {
-	const values = records.flatMap((record) => (record.ttftMs === undefined ? [] : [record.ttftMs]));
-	return values.length === 0 ? undefined : values.reduce((sum, value) => sum + value, 0) / values.length;
-}
-
-/**
- * Aggregates request records with one method for runs and sessions, so their figures cannot disagree:
- * - TPS: the aggregate generation rate, summed generated tokens over summed generation time of the non-burst requests
- *   with at least 1 s of generation time (the per-request rates weighted by their generation time). Aborted requests
- *   count only when nothing else qualifies, so an aborted run still shows a rate.
- * - Burst throughput: only when every request was a burst, i.e. the whole answer was buffered.
- * - TTFT: mean over non-aborted requests, falling back to aborted ones the same way.
- * - Everything else: sums over all requests.
- */
-export function aggregate(records: readonly RequestRecord[]): Aggregate {
-	const result: Aggregate = {
-		requests: records.length,
-		estimated: false,
-		tokensEstimated: false,
+/** Sums over every run and request on the branch, aborted and burst ones included; undefined without runs. */
+export function sessionTotals(runs: readonly RunRecord[]): SessionTotals | undefined {
+	const last = runs.at(-1);
+	if (!last) return undefined;
+	const totals: SessionTotals = {
+		runs: runs.length,
+		elapsedMs: 0,
+		requests: 0,
 		inputTokens: 0,
 		cacheReadTokens: 0,
 		cacheWriteTokens: 0,
 		visibleOutputTokens: 0,
 		thinkingTokens: 0,
-		thinkingMs: 0,
-		stallMs: 0,
-		stallCount: 0,
+		lastAborted: last.aborted,
 	};
-	for (const record of records) {
-		result.inputTokens += record.inputTokens;
-		result.cacheReadTokens += record.cacheReadTokens;
-		result.cacheWriteTokens += record.cacheWriteTokens;
-		result.visibleOutputTokens += visibleOutput(record);
-		result.thinkingTokens += record.thinkingTokens ?? 0;
-		result.thinkingMs += record.thinkingMs ?? 0;
-		result.stallMs += record.stallMs;
-		result.stallCount += record.stallCount;
-		if (record.cost !== undefined) result.cost = (result.cost ?? 0) + record.cost;
-		if (tokensEstimated(record)) result.tokensEstimated = true;
-	}
-
-	const completed = records.filter((record) => record.outcome === "settled");
-	const aborted = records.filter((record) => record.outcome === "aborted");
-	const settledRated = completed.filter(hasRate);
-	const rated = settledRated.length > 0 ? settledRated : aborted.filter(hasRate);
-	const rate = weightedRate(rated);
-	if (rate) {
-		result.tps = rate.tps;
-		result.estimated = rate.estimated;
-	} else if (records.length > 0 && records.every((record) => record.burst)) {
-		const tokens = records.reduce((sum, record) => sum + record.outputTokens, 0);
-		const ms = records.reduce((sum, record) => sum + record.elapsedMs, 0);
-		if (ms > 0) {
-			result.burstTps = tokens / (ms / 1000);
-			result.estimated = records.some((record) => record.estimated);
+	for (const run of runs) {
+		totals.elapsedMs += run.elapsedMs;
+		totals.requests += run.requests.length;
+		for (const record of run.requests) {
+			totals.inputTokens += record.inputTokens;
+			totals.cacheReadTokens += record.cacheReadTokens;
+			totals.cacheWriteTokens += record.cacheWriteTokens;
+			totals.visibleOutputTokens += visibleOutput(record);
+			totals.thinkingTokens += record.thinkingTokens ?? 0;
+			if (record.cost !== undefined) totals.cost = (totals.cost ?? 0) + record.cost;
 		}
 	}
-	const ttftMs = meanTtft(completed) ?? meanTtft(aborted);
-	if (ttftMs !== undefined) result.ttftMs = ttftMs;
-
-	const colourSource = rated.at(-1) ?? records.at(-1);
-	if (colourSource) {
-		result.provider = colourSource.provider;
-		result.model = colourSource.model;
-	}
-	return result;
-}
-
-export function summarizeRun(run: RunRecord): RunSummary {
-	return { ...aggregate(run.requests), elapsedMs: run.elapsedMs, aborted: run.aborted };
-}
-
-/** Session figures over every run on the branch; undefined without runs. */
-export function summarizeSession(runs: readonly RunRecord[]): SessionSummary | undefined {
-	if (runs.length === 0) return undefined;
-	return { ...aggregate(runs.flatMap((run) => run.requests)), runs: runs.length };
+	return totals;
 }

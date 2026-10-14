@@ -1,7 +1,6 @@
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS, MIN_TICK_INTERVAL_MS } from "./constants.ts";
 import { errorMessage } from "./files.ts";
-import type { SummaryMode } from "./telemetry.ts";
 
 export const CONFIG_FILE_NAME = "pi-tps.json";
 
@@ -29,7 +28,27 @@ const LEVEL = {
 	any: 5,
 } as const;
 
-export interface Override {
+/**
+ * How a live TPS or TTFT is coloured: `relative` by the live value as a percentage of the model's average (TTFT as
+ * average over live), `absolute` by the value itself (TPS in tokens per second, TTFT in seconds).
+ */
+export type ColorMode = "relative" | "absolute";
+
+export interface MetricSettings {
+	mode: ColorMode;
+	/** Thresholds in percent. */
+	relative: Threshold[];
+	/** Thresholds in tokens per second for TPS, in seconds for TTFT. */
+	absolute: Threshold[];
+}
+
+export type Metric = "tps" | "ttft";
+
+/** Colour settings of both live metrics. */
+export type MetricConfig = Record<Metric, MetricSettings>;
+
+/** The match rule of an override key. */
+export interface OverrideRule {
 	key: string;
 	level: number;
 	/** Literal characters of the model pattern; more literals means fewer wildcard-matched characters. */
@@ -37,21 +56,26 @@ export interface Override {
 	/** Lower-cased provider, or undefined when the key matches any provider. */
 	provider?: string;
 	model: RegExp;
-	thresholds: Threshold[];
 }
 
-/** How fields are named: short words (`TPS 48.6 tok/s · TTFT 1.2s`) or single-cell symbols (`»48.6/s ⇥1.2s`). */
-export type LabelStyle = "text" | "symbols";
+export interface Override extends OverrideRule {
+	/** The settings this override sets; every other leaf comes from the top level. */
+	metrics: Partial<Record<Metric, Partial<MetricSettings>>>;
+}
 
-export interface TpsConfig {
+export interface TpsConfig extends MetricConfig {
 	/** Initial visibility of the readout; `/tps` toggles it per session. */
 	enabled: boolean;
 	persist: boolean;
-	labels: LabelStyle;
-	summaryMode: SummaryMode;
+	/** When false, live counts use the raw estimate and the calibration directory is neither read nor written. */
+	calibration: boolean;
+	/** Drawn between fields. */
+	separator: string;
 	baseColor: ColorSpec;
+	separatorColor: ColorSpec;
+	/** Colour of the `↯` before a burst throughput. */
+	burstColor: ColorSpec;
 	animation: AnimationConfig;
-	thresholds: Threshold[];
 	overrides: Override[];
 }
 
@@ -125,19 +149,32 @@ export function parseColorSpec(value: unknown): ColorSpec | undefined {
 
 const token = (name: ThemeColor): ColorSpec => ({ kind: "token", token: name });
 
+export const DEFAULT_SEPARATOR = " | ";
+
+function thresholdList(...entries: [number, ThemeColor][]): Threshold[] {
+	return entries.map(([min, color]) => ({ min, color: token(color) }));
+}
+
 export function defaultConfig(): TpsConfig {
 	return {
 		enabled: true,
 		persist: true,
-		labels: "text",
-		summaryMode: "last",
+		calibration: true,
+		separator: DEFAULT_SEPARATOR,
 		baseColor: token("dim"),
+		separatorColor: token("borderMuted"),
+		burstColor: token("mdLink"),
 		animation: { enabled: true, intervalMs: DEFAULT_TICK_INTERVAL_MS, frames: [...DEFAULT_FRAMES] },
-		thresholds: [
-			{ min: 0, color: token("error") },
-			{ min: 30, color: token("warning") },
-			{ min: 80, color: token("success") },
-		],
+		tps: {
+			mode: "relative",
+			relative: thresholdList([0, "error"], [40, "warning"], [75, "success"]),
+			absolute: thresholdList([0, "error"], [30, "warning"], [80, "success"]),
+		},
+		ttft: {
+			mode: "relative",
+			relative: thresholdList([0, "error"], [40, "warning"], [75, "success"]),
+			absolute: thresholdList([0, "success"], [3, "warning"], [6, "error"]),
+		},
 		overrides: [],
 	};
 }
@@ -191,7 +228,7 @@ export function compileGlob(pattern: string): RegExp {
 }
 
 /** Parses an override key into its match rule, or returns a reason why it is invalid. */
-export function parseOverrideKey(key: string): Omit<Override, "thresholds"> | string {
+export function parseOverrideKey(key: string): OverrideRule | string {
 	const slash = key.indexOf("/");
 	let provider: string | undefined;
 	let model = key;
@@ -210,7 +247,7 @@ export function parseOverrideKey(key: string): Omit<Override, "thresholds"> | st
 	if (model === "*") level = provider === undefined ? LEVEL.any : LEVEL.providerAny;
 	else if (provider !== undefined) level = glob ? LEVEL.providerGlob : LEVEL.exact;
 	else level = glob ? LEVEL.modelGlob : LEVEL.modelExact;
-	const rule: Omit<Override, "thresholds"> = {
+	const rule: OverrideRule = {
 		key,
 		level,
 		specificity: model.replaceAll("*", "").length,
@@ -220,8 +257,11 @@ export function parseOverrideKey(key: string): Omit<Override, "thresholds"> | st
 	return rule;
 }
 
-/** Thresholds for a provider and model: the most specific matching override, else the global list. */
-export function resolveThresholds(config: TpsConfig, provider: string, model: string): Threshold[] {
+/**
+ * Colour settings for a provider and model: the single most specific matching override, with every leaf it does not
+ * set taken from the top level. Overrides never combine.
+ */
+export function resolveMetrics(config: TpsConfig, provider: string, model: string): MetricConfig {
 	const providerKey = provider.toLowerCase();
 	let best: Override | undefined;
 	for (const override of config.overrides) {
@@ -235,7 +275,16 @@ export function resolveThresholds(config: TpsConfig, provider: string, model: st
 			best = override;
 		}
 	}
-	return best?.thresholds ?? config.thresholds;
+	return { tps: { ...config.tps, ...best?.metrics.tps }, ttft: { ...config.ttft, ...best?.metrics.ttft } };
+}
+
+/** The colour of the highest threshold whose minimum is not greater than the value; none below the lowest. */
+export function selectColor(thresholds: readonly Threshold[], value: number): ColorSpec | undefined {
+	let selected: ColorSpec | undefined;
+	for (const threshold of thresholds) {
+		if (threshold.min <= value) selected = threshold.color;
+	}
+	return selected;
 }
 
 // Control characters (newlines, escapes) would break the footer line or inject terminal sequences.
@@ -254,13 +303,49 @@ function isFrame(frame: unknown): frame is string {
 const KNOWN_KEYS = new Set([
 	"enabled",
 	"persist",
-	"labels",
-	"summaryMode",
+	"calibration",
+	"separator",
 	"baseColor",
+	"separatorColor",
+	"burstColor",
 	"animation",
-	"thresholds",
+	"tps",
+	"ttft",
 	"overrides",
 ]);
+
+const METRIC_KEYS = new Set(["mode", "relative", "absolute"]);
+const METRICS: readonly Metric[] = ["tps", "ttft"];
+
+/**
+ * Parses the metric settings at `path`, keeping only the leaves that are valid. Undefined (after a warning) when the
+ * value is not an object.
+ */
+function parseMetric(
+	value: unknown,
+	path: string,
+	fallbackColor: ColorSpec,
+	warn: (message: string) => void,
+): Partial<MetricSettings> | undefined {
+	if (!isRecord(value)) {
+		warn(`${path}: expected an object with "mode", "relative" and "absolute"; ignored`);
+		return undefined;
+	}
+	for (const key of Object.keys(value)) if (!METRIC_KEYS.has(key)) warn(`${path}.${key}: unknown setting ignored`);
+	const settings: Partial<MetricSettings> = {};
+	const { mode, relative, absolute } = value;
+	if (mode === "relative" || mode === "absolute") settings.mode = mode;
+	else if (mode !== undefined) warn(`${path}.mode: expected "relative" or "absolute"; ignored`);
+	for (const [key, list] of [
+		["relative", relative],
+		["absolute", absolute],
+	] as const) {
+		if (list === undefined) continue;
+		const parsed = parseThresholds(list, `${path}.${key}`, fallbackColor, warn);
+		if (parsed) settings[key] = parsed;
+	}
+	return settings;
+}
 
 /**
  * Parses the configuration file content. Every problem produces one warning and falls back to the default of
@@ -287,24 +372,28 @@ export function parseConfig(text: string | undefined, source: string): { config:
 
 	for (const key of Object.keys(json)) if (!KNOWN_KEYS.has(key)) warn(`${key}: unknown setting ignored`);
 
-	for (const key of ["enabled", "persist"] as const) {
+	for (const key of ["enabled", "persist", "calibration"] as const) {
 		const value = json[key];
 		if (value === undefined) continue;
 		if (typeof value === "boolean") config[key] = value;
 		else warn(`${key}: expected true or false; using ${config[key]}`);
 	}
 
-	const { labels, summaryMode, baseColor, animation, thresholds, overrides } = json;
+	const { separator, animation, overrides } = json;
 
-	if (labels === "text" || labels === "symbols") config.labels = labels;
-	else if (labels !== undefined) warn(`labels: expected "text" or "symbols"; using "${config.labels}"`);
-	if (summaryMode === "last" || summaryMode === "session") config.summaryMode = summaryMode;
-	else if (summaryMode !== undefined) warn(`summaryMode: expected "last" or "session"; using "${config.summaryMode}"`);
+	// baseColor comes first: it is the fallback of every invalid threshold colour.
+	for (const key of ["baseColor", "separatorColor", "burstColor"] as const) {
+		const value = json[key];
+		if (value === undefined) continue;
+		const parsed = parseColorSpec(value);
+		if (parsed) config[key] = parsed;
+		else warn(`${key}: ${JSON.stringify(value)} is not a colour, ${COLOR_HINT}; using the default`);
+	}
 
-	if (baseColor !== undefined) {
-		const parsed = parseColorSpec(baseColor);
-		if (parsed) config.baseColor = parsed;
-		else warn(`baseColor: ${JSON.stringify(baseColor)} is not a colour, ${COLOR_HINT}; using dim`);
+	if (typeof separator === "string" && separator.length > 0 && !hasControlCharacter(separator)) {
+		config.separator = separator;
+	} else if (separator !== undefined) {
+		warn(`separator: expected a non-empty string without control characters; using "${DEFAULT_SEPARATOR}"`);
 	}
 
 	if (animation !== undefined) {
@@ -331,23 +420,41 @@ export function parseConfig(text: string | undefined, source: string): { config:
 		}
 	}
 
-	if (thresholds !== undefined) {
-		const parsed = parseThresholds(thresholds, "thresholds", config.baseColor, warn);
-		if (parsed) config.thresholds = parsed;
+	for (const metric of METRICS) {
+		const value = json[metric];
+		if (value === undefined) continue;
+		const parsed = parseMetric(value, metric, config.baseColor, warn);
+		if (parsed) config[metric] = { ...config[metric], ...parsed };
 	}
 
 	if (overrides !== undefined) {
 		if (!isRecord(overrides)) {
-			warn("overrides: expected an object mapping match keys to threshold lists");
+			warn('overrides: expected an object mapping match keys to { "tps"?, "ttft"? }');
 		} else {
 			for (const [key, value] of Object.entries(overrides)) {
+				const path = `overrides["${key}"]`;
 				const rule = parseOverrideKey(key);
 				if (typeof rule === "string") {
-					warn(`overrides["${key}"]: ${rule}; override ignored`);
+					warn(`${path}: ${rule}; override ignored`);
 					continue;
 				}
-				const parsed = parseThresholds(value, `overrides["${key}"]`, config.baseColor, warn);
-				if (parsed) config.overrides.push({ ...rule, thresholds: parsed });
+				if (!isRecord(value)) {
+					const hint = Array.isArray(value)
+						? ' (a threshold list is the old format; use { "tps": { "absolute": [...] } })'
+						: "";
+					warn(`${path}: expected { "tps"?, "ttft"? }${hint}; override ignored`);
+					continue;
+				}
+				const metrics: Override["metrics"] = {};
+				for (const name of Object.keys(value)) {
+					if (name !== "tps" && name !== "ttft") warn(`${path}.${name}: unknown setting ignored`);
+				}
+				for (const metric of METRICS) {
+					if (value[metric] === undefined) continue;
+					const parsed = parseMetric(value[metric], `${path}.${metric}`, config.baseColor, warn);
+					if (parsed) metrics[metric] = parsed;
+				}
+				config.overrides.push({ ...rule, metrics });
 			}
 		}
 	}

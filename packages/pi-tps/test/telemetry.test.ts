@@ -66,4 +66,21 @@ describe("run records", () => {
 		expect(parseRequestRecord({ ...request(), generatedTokens: undefined })).toBeUndefined();
 		expect(parseRequestRecord({ ...request(), tps: "80" })).toBeUndefined();
 	});
+
+	it("round-trip the selected model of a virtual model (virtual model)", () => {
+		const routed = request({
+			provider: "anthropic",
+			model: "claude-sonnet-4",
+			requested: { provider: "router", model: "auto" },
+		});
+		expect(parseRequestRecord(JSON.parse(JSON.stringify(routed)))).toEqual(routed);
+	});
+
+	it("accept a record without requested and drop a malformed one (record written before this change)", () => {
+		const legacy = parseRequestRecord(request());
+		expect(legacy).toBeDefined();
+		expect(legacy?.requested).toBeUndefined();
+		expect(parseRequestRecord({ ...request(), requested: { provider: "router" } })?.requested).toBeUndefined();
+		expect(parseRequestRecord({ ...request(), requested: "router/auto" })).toEqual(request());
+	});
 });

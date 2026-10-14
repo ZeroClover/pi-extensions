@@ -20,15 +20,22 @@ export type BurstReason = "few-batches" | "cluster" | "rate";
  */
 export type ThinkingKind = "none" | "hidden" | "streamed";
 
-export type SummaryMode = "last" | "session";
+/** A provider and one of its models. */
+export interface ModelRef {
+	provider: string;
+	model: string;
+}
 
 /** One measured request. Durations are milliseconds on a monotonic clock, rates are tokens per second. */
 export interface RequestRecord {
 	/** Wall-clock milliseconds when the request was sent. */
 	timestamp: number;
+	/** The serving provider and model, named by the assistant message. */
 	provider: string;
 	model: string;
 	responseModel?: string;
+	/** The model selected when the request was sent, only when it differs from the serving model (a virtual model). */
+	requested?: ModelRef;
 	outcome: "settled" | "aborted";
 	burst: boolean;
 	burstReason?: BurstReason;
@@ -47,7 +54,7 @@ export interface RequestRecord {
 	outputMs: number;
 	/**
 	 * Generation time: the thinking time plus the active output span, unrounded because it is the denominator of
-	 * `tps` and of the run and session rates.
+	 * `tps`.
 	 */
 	generationMs: number;
 	/**
@@ -56,8 +63,8 @@ export interface RequestRecord {
 	 */
 	generatedTokens: number;
 	/**
-	 * Generation rate: generated tokens over the generation time, unrounded so that it equals the rate of a run or
-	 * session made of this request alone. Absent for bursts and generation times under 1 s.
+	 * Generation rate: generated tokens over the generation time, unrounded. Absent for bursts and generation times
+	 * under 1 s.
 	 */
 	tps?: number;
 	/** Visible output tokens over the active output span. Absent for bursts and spans under 1 s. */
@@ -73,8 +80,7 @@ export interface RequestRecord {
 	thinking: ThinkingKind;
 	/**
 	 * True when the provider reported no output usage, so the token counts and rates rest on the calibrated estimate.
-	 * Thinking tokens of streamed thinking without a positive reasoning count are estimated as well (see
-	 * `thinkingEstimated` in `aggregate.ts`).
+	 * Thinking tokens of streamed thinking without a positive reasoning count are estimated as well.
 	 */
 	estimated: boolean;
 	inputTokens: number;
@@ -103,46 +109,19 @@ export interface RunRecord {
 	requests: RequestRecord[];
 }
 
-/** Figures aggregated over request records; the same method serves runs and sessions. */
-export interface Aggregate {
-	requests: number;
-	/** Generated tokens over generation time of settled, non-burst requests with at least 1 s of generation time. */
+/** Smoothed averages of one model; each is absent until the model has a positive sample of it. */
+export interface Averages {
+	/** Generation rate of streamed requests, tokens per second. */
 	tps?: number;
-	/** Whether the shown rate (TPS, or burst throughput) relied on the estimate. */
-	estimated: boolean;
-	/** Output tokens over elapsed time, only when every request was a burst. */
+	/** Throughput of burst requests, tokens per second. */
 	burstTps?: number;
-	/** Whether a record behind the summed output or thinking tokens relied on the estimate. */
-	tokensEstimated: boolean;
-	/** Mean over non-aborted requests. */
 	ttftMs?: number;
-	inputTokens: number;
-	cacheReadTokens: number;
-	cacheWriteTokens: number;
-	/** Output tokens without thinking. */
-	visibleOutputTokens: number;
-	thinkingTokens: number;
-	thinkingMs: number;
-	stallMs: number;
-	stallCount: number;
-	cost?: number;
-	/** Model of the last request contributing to the TPS (else the last request), for the colour thresholds. */
-	provider?: string;
-	model?: string;
-}
-
-export interface RunSummary extends Aggregate {
-	elapsedMs: number;
-	aborted: boolean;
-}
-
-export interface SessionSummary extends Aggregate {
-	runs: number;
 }
 
 /** Figures of the request in flight. */
 export interface LiveSnapshot {
 	phase: "waiting" | "streaming";
+	/** The model serving the request: the selected model until `message_start` names the serving one. */
 	provider: string;
 	model: string;
 	/** Number of the request within its run, starting at 1. */
@@ -159,12 +138,8 @@ export interface LiveSnapshot {
 	/** Thinking time so far, the open phase included; absent without a thinking phase. */
 	thinkingMs?: number;
 	thinking: ThinkingKind;
-	/** False when the serving model has no output calibration ratio yet. */
-	calibrated: boolean;
-	/** False when the serving model has no thinking calibration ratio yet. */
-	thinkingCalibrated: boolean;
-	/** False when tokens of a kind without calibration ratio contribute to the live TPS. */
-	tpsCalibrated: boolean;
+	/** Averages of the serving model, without the request in flight. */
+	average: Averages;
 }
 
 /** A run is active between requests, typically while tools execute. */
@@ -174,16 +149,39 @@ export interface WorkingSnapshot {
 	requests: number;
 	/** Visible output tokens of the run's requests so far. */
 	outputTokens: number;
-	/** Whether one of those requests relied on the estimate. */
-	estimated: boolean;
+	/** Averages of the current model. */
+	average: Averages;
 }
 
-export type StatusSnapshot =
-	| LiveSnapshot
-	| WorkingSnapshot
-	| { phase: "run"; run: RunSummary }
-	| { phase: "session"; session: SessionSummary }
-	| { phase: "empty"; mode: SummaryMode };
+/** Sums over every run on the branch, aborted runs included. */
+export interface SessionTotals {
+	runs: number;
+	/** Summed wall time of the runs. */
+	elapsedMs: number;
+	requests: number;
+	/** Input tokens without cache reads and writes, as in the request records. */
+	inputTokens: number;
+	cacheReadTokens: number;
+	cacheWriteTokens: number;
+	/** Output tokens without thinking. */
+	visibleOutputTokens: number;
+	thinkingTokens: number;
+	/** USD over the requests that carry a cost; absent when none does. */
+	cost?: number;
+	/** Whether the last run was aborted. */
+	lastAborted: boolean;
+}
+
+/** No run is active. */
+export interface IdleSnapshot {
+	phase: "idle";
+	/** Averages of the current model. */
+	average: Averages;
+	/** Absent while the branch holds no run. */
+	session?: SessionTotals;
+}
+
+export type StatusSnapshot = LiveSnapshot | WorkingSnapshot | IdleSnapshot;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -210,6 +208,12 @@ function nonNegative(value: unknown): value is number {
 	return finite(value) && value >= 0;
 }
 
+function parseModelRef(value: unknown): ModelRef | undefined {
+	if (!isRecord(value)) return undefined;
+	const { provider, model } = value;
+	return typeof provider === "string" && typeof model === "string" ? { provider, model } : undefined;
+}
+
 /** Validates one request record. Malformed shapes yield `undefined`. */
 export function parseRequestRecord(data: unknown): RequestRecord | undefined {
 	if (!isRecord(data)) return undefined;
@@ -233,6 +237,7 @@ export function parseRequestRecord(data: unknown): RequestRecord | undefined {
 		thinking,
 		estimated,
 		responseModel,
+		requested,
 		burstReason,
 	} = data;
 	if (outcome !== "settled" && outcome !== "aborted") return undefined;
@@ -277,6 +282,9 @@ export function parseRequestRecord(data: unknown): RequestRecord | undefined {
 		stallMs,
 	};
 	if (typeof responseModel === "string") record.responseModel = responseModel;
+	// Like `responseModel`, a malformed value is dropped; the record then reads as sent under its serving model.
+	const requestedModel = parseModelRef(requested);
+	if (requestedModel) record.requested = requestedModel;
 	if (isBurstReason(burstReason)) record.burstReason = burstReason;
 	const optional = [
 		"ttftMs",

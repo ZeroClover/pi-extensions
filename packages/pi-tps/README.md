@@ -1,6 +1,6 @@
 # pi-tps
 
-Generation-speed readout for Pi's footer. pi-tps measures every assistant request of an agent run: time to first token, thinking and output, the generation rate in tokens per second (thinking included), stalls, and burst delivery (a proxy that buffers the response and flushes it at once). While a request streams it shows live figures; while tools run it shows the run's progress; when Pi has finished the whole prompt it shows one summary of the run. Streamed tokens are estimated with [tokenx](https://github.com/johannschopplich/tokenx) and calibrated per provider and model against the usage the provider reports, so live figures converge on real token counts. Each run is stored in the session, so the last summary and the session average survive resume, `/reload` and `/tree`.
+Generation-speed readout for Pi's footer. pi-tps measures every assistant request of an agent run: time to first token (TTFT), thinking and output, the generation rate in tokens per second (TPS, thinking included), stalls, and burst delivery (a proxy that buffers the response and flushes it at once). A live figure only means something next to what the same model usually does, so while a request streams the readout shows its live TPS and TTFT beside the serving model's smoothed averages, coloured by how the request compares with them; between requests it shows the averages and the run's progress; once Pi has finished a prompt it shows the current model's averages and totals over every run of the session. Streamed tokens are estimated with [tokenx](https://github.com/johannschopplich/tokenx) and calibrated per provider and model against the usage the provider reports, so live figures converge on real token counts. Each run is stored in the session, so the averages and totals survive resume, `/reload` and `/tree`.
 
 ## Install
 
@@ -16,95 +16,88 @@ pi install /absolute/path/to/packages/pi-tps  # install a repository checkout fo
 
 | Kind | Name | Description |
 |---|---|---|
-| command | `/tps` | Show or hide the readout. Measurement, persistence and broadcasts continue while hidden. |
-| command | `/tps mode` | Switch the idle readout between the last run's summary and the session average. |
-| command | `/tps mode last` / `/tps mode session` | Set the idle readout explicitly. |
+| command | `/tps` | Show or hide the readout. Measurement, persistence and broadcasts continue while hidden. Takes no arguments. |
 | status | `pi-tps` | The readout, written to the footer with `ctx.ui.setStatus` (interactive mode only). |
 | session entry | `customType: "pi-tps"` | One record per run; never sent to the model. |
 | events | `pi-tps:status`, `pi-tps:telemetry`, `pi-tps:run`, `pi-tps:request` | Event-bus contract for other extensions (below). |
 
-Visibility and mode last until the extension runtime is replaced (`/reload`, session switch), which restores `enabled` and `summaryMode` from the configuration.
+Visibility lasts until the extension runtime is replaced (`/reload`, session switch), which restores `enabled` from the configuration.
 
 ## Reading the readout
 
-The readout is one line in Pi's footer, on the status line it shares with other extensions. It follows the **run**: everything Pi does for one prompt, from the moment you send it until Pi stops on its own. That covers every request to the model, every tool call between them, automatic retries and queued follow-ups. While the run is active the line shows what is happening right now; when the run has finished it shows one summary of the whole run. pi-tps never shows an average in the middle of a run, because the requests of one prompt (thinking, tool calls, the final answer) differ too much for a running average to mean anything.
+The readout is one line in Pi's footer, on the status line it shares with other extensions. It follows the **run**: everything Pi does for one prompt, from the moment you send it until Pi stops on its own. That covers every request to the model, every tool call between them, automatic retries and queued follow-ups. While a request is in flight the line compares it with the model's usual figures; when no run is active it shows those usual figures and what the whole session has done so far.
 
-Every field exists in two styles: `text` (the default) names it with a short word, `symbols` (`"labels": "symbols"` in the [configuration](#configuration)) marks it with one character. Both styles show the same fields in the same order.
+### What you see
 
-### What you see during a run
+A spinner (`⠋⠙⠹…`) at the start of the line means a run is active; `✓` or `✗` means the last run has finished. With the current model averaging 52.3 tok/s and 1.1 s TTFT, the line goes through states like these:
 
-A spinner (`⠋⠙⠹…`) at the start of the line means a run is active. The line then goes through these states, repeating the first three for every request of the run:
+<!-- example-lines: test/format.test.ts checks that pi-tps prints each of these lines exactly -->
+```text
+⠋ - TPS | TTFT 1.4s
+⠹ - (x̄52.3) TPS | TTFT 2.0s (x̄1.1s) | 2➤
+⠼ 68.3 (x̄52.3) TPS | TTFT 0.6s (x̄1.1s) | ↓1.2K | ⠿1.9K 4.0s | 2➤
+⠧ - (x̄52.3) TPS | TTFT 4.2s (x̄1.1s) | ⠿4.0s
+⠇ x̄52.4 TPS | TTFT x̄1.0s | run 12.3s | 1➤ | ↓1.6K
+✓ x̄52.4 TPS | TTFT x̄1.0s | 3 runs in 4m 12s | 14➤ | ↑40K ◎88% | ↓6.2K | ⠿2.1K | $0.050
+✗ x̄52.1 TPS | TTFT x̄1.0s | 4 runs in 4m 17s | 15➤ | ↑46K ◎89% | ↓6.3K | ⠿2.1K | $0.054
+✓ x̄↯225.0 TPS | TTFT x̄4.0s | 2 runs in 9.1s | 2➤ | ↑6.2K | ↓1.8K | $0.0040
+- TPS | TTFT -
+```
 
-| State | Example (text) | Example (symbols) | When |
-|---|---|---|---|
-| Waiting | `⠋ TTFT 1.2s` | `⠋ ⇥1.2s` | A request has been sent and nothing has come back yet. `TTFT` counts up. |
-| Streaming | `⠙ TPS 48.6 tok/s · TTFT 1.2s · out 1.2K · think 1.9K 4.0s · req 2` | `⠙ »48.6/s ⇥1.2s ↓1.2K ✻1.9K 4.0s ×2` | The model is thinking or answering. Figures are for this request only and update about ten times a second. |
-| Streaming, hidden thinking | `⠙ TPS — · TTFT 4.2s · think 4.0s` | `⠙ »— ⇥4.2s ✻4.0s` | The model is thinking without showing its thoughts (for example OpenAI's reasoning models). Only the thinking time is known; `TTFT` keeps counting until the first content arrives. |
-| Working | `⠹ run 12.3s · req 1 · out 1.6K` | `⠹ 12.3s ×1 ↓1.6K` | Between two requests, usually while a tool runs. No speed is shown because nothing is being generated. |
-| Summary | `TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3 · $0.0018` | `✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K ✻94 4.1s ‖1.2s×1 ×3 $0.0018` | The run has finished. The line stays until the next run starts. |
-
-When idle, `/tps mode session` replaces the last run's summary with the session average, and `/tps mode last` switches back:
-
-| State | Example (text) | Example (symbols) | When |
-|---|---|---|---|
-| Session | `session · TPS 110.0 tok/s · TTFT 0.6s · in 40K · out 6.2K · runs 3 · $0.050` | `Σ »110.0/s ⇥0.6s ↑40K ↓6.2K ×3 $0.050` | Idle in `session` mode: all runs on the current branch together. |
-| No data | `TPS — · TTFT —` (`session · TPS — · TTFT —` in session mode) | `· »— ⇥—` (`Σ »— ⇥—`) | Nothing measured yet on this branch. |
-
-Two variants of the summary:
-
-| Variant | Example (text) | Example (symbols) | Meaning |
-|---|---|---|---|
-| Aborted | `aborted · TPS 47.0 tok/s · TTFT 0.6s · 5.0s · out 64 · req 1` | `✗ »47.0/s ⇥0.6s 5.0s ↓64 ×1` | You pressed Escape. The figures cover what had arrived until then. |
-| Burst only | `burst 225.0 tok/s · TTFT 4.0s · 4.0s · in 3.1K · out 900 · req 1` | `✓ ↯225.0/s ⇥4.0s 4.0s ↑3.1K ↓900 ×1` | Every answer of the run arrived in one piece instead of streaming (typically a proxy that buffers responses), so the generation speed cannot be measured. |
+1. **Waiting, first request of a model.** A request has been sent and nothing has come back yet; `TTFT` counts up. The model has not served a request on this branch, so there is no average to compare with.
+2. **Waiting** for the first token of the run's second request. The live TPS is `-` until the model generates; the averages follow in parentheses.
+3. **Streaming.** The model is thinking or answering; the figures are for this request only and update about ten times a second.
+4. **Streaming, hidden thinking.** The model thinks without showing its thoughts (for example OpenAI's reasoning models): only the thinking time is known, and `TTFT` keeps counting until the first content arrives.
+5. **Working** between two requests, usually while a tool runs: the current model's averages, which already include the request that just ended, then the run's time, its requests so far and their output.
+6. **Idle** after three runs: the current model's averages, then totals over every run on the branch.
+7. **Idle after an aborted run**: you pressed Escape during the last run; the totals still include it.
+8. **Idle with a burst-only model**: every answer of that model arrived in one piece instead of streaming (typically a proxy that buffers responses), so its generation speed cannot be measured and the burst throughput is shown instead.
+9. **No data**: nothing has been measured on this branch yet.
 
 ### Fields
 
-Each field appears only when it has a value; the table says in which states. Fields come in order of importance, so when the footer is too narrow Pi cuts the line from the end.
+Fields are separated by ` | ` (see `separator`). Each field appears only when it has a value; the table says in which states. Fields come in order of importance, so when the footer is too narrow Pi cuts the line from the end.
 
-| Text | Symbol | Shown in | Meaning |
-|---|---|---|---|
-| `TPS 48.6 tok/s` | `»48.6/s` | Streaming, summary, session | **Generation speed**: tokens the model generated per second, thinking included. While streaming it is the thinking and output that arrived in the last 5 seconds divided by the generating time in those 5 seconds; it starts as soon as thinking or output has streamed for 1.5 s and shows `—` before that and while the model thinks without showing its thoughts. Pauses in the output (see `stall`) are left out of it, and so is the very first piece of each phase, whose tokens were generated while you were still waiting. In a summary it is every token the provider counted (thinking included) divided by the time the model spent generating them: its thinking time plus its writing time, over the requests that generated for at least one second, so waiting for the first token and pauses do not count and longer requests weigh more. When a provider reports thinking tokens but shows no thinking phase, their time is unknown, so they are left out of the speed (see `think`). The figure is coloured by speed: by default the theme's error colour below 30 tok/s, its warning colour from 30 and its success colour from 80 (red, yellow and green in most themes; see `thresholds`). |
-| `burst 225.0 tok/s` | `↯225.0/s` | Summary, session | Replaces `TPS` when every request of the run arrived in one piece: output tokens divided by the whole time from sending the request to the end, waiting included. It describes delivery, not generation speed, so it is never coloured. |
-| `TTFT 1.2s` | `⇥1.2s` | Waiting, streaming, summary, session | **Time to first token**: from sending a request until the first piece of the answer (text, thinking or tool call) arrives; when that piece is thinking and the provider announced the start of the thinking block earlier, until that announcement. It counts up while waiting (also while the model thinks without showing it) and freezes when the first piece arrives. Summaries show the average over the run's requests. |
-| `18.4s` | `18.4s` | Summary | **Run duration**: wall-clock time from sending the prompt until Pi finished, including tool execution and waiting. This is the only field without a label. |
-| `run 12.3s` | `12.3s` | Working | Time since the run started. Keeps counting while tools execute. |
-| `in 6.2K (cache 92%)` | `↑6.2K ↻92%` | Summary, session | **Input tokens** sent to the model, added up over every request. Each request re-sends the conversation, so a run of several requests sends the context several times; this is what you pay for. Cached tokens are included. The percentage in parentheses (`↻`) is the share of that input read from the provider's prompt cache, which is cheaper and faster; it is left out when nothing came from the cache. Left out entirely when no input was reported (for example a run aborted before the first answer). |
-| `out 1.4K` | `↓1.4K` | Streaming, working, summary, session | **Output tokens** the model wrote as answer text and tool-call arguments, without thinking. While streaming it is an estimate for the current request; while working, the total of the run's finished requests; in summaries, the total reported by the provider. |
-| `think 94 4.1s` | `✻94 4.1s` | Streaming, summary | **Thinking**: the number of reasoning tokens, then how long the model spent thinking (from the start to the end of its thinking blocks, silences included). While the model thinks without showing its thoughts only the time is shown (`think 4.0s`), and so does a summary whose provider reported no thinking count for such thinking. The time is left out when the provider reports thinking tokens but shows no thinking phase, or when it is under 0.05 s. |
-| `stall 1.2s×1` | `‖1.2s×1` | Summary | **Pauses** in the middle of the written answer: the total time the output stopped for half a second or more, then how many times it stopped. Silence while the model thinks is thinking, not a pause. Shown only when the output paused; this time is excluded from `TPS`. |
-| `req 2` | `×2` | Waiting, streaming | **Which request** of the run this is. Shown from the second request on. |
-| `req 1` | `×1` | Working, summary | **How many requests** the run has made so far, or made in total. Requests that failed with an error do not count. |
-| `runs 3` | `×3` | Session | **How many runs** (prompts) the session average covers. |
-| `$0.0018` | `$0.0018` | Summary, session | **Cost** in US dollars, added up. Shown only for models that have a price in Pi. |
+| Field | Shown in | Meaning |
+|---|---|---|
+| `68.3 (x̄52.3) TPS` | Waiting, streaming | **Generation speed** of the request in flight, then the serving model's average TPS in parentheses (left out while the model has none). The speed counts tokens the model generated per second, thinking included: the thinking and output that arrived in the last 5 seconds divided by the generating time in those 5 seconds. It starts as soon as thinking or output has streamed for 1.5 s and shows `-` before that and while the model thinks without showing its thoughts. Pauses in the output are left out of it, and so is the very first piece of each phase, whose tokens were generated while you were still waiting. |
+| `x̄52.4 TPS` | Working, idle | **Average TPS** of the current model alone; `- TPS` while it has none. |
+| `x̄↯225.0 TPS`, `(x̄↯225.0)` | All | **Burst throughput** average, in place of the TPS average while the model has only burst requests: output tokens divided by the whole time from sending the request to the end, waiting included. It describes delivery, not generation speed. |
+| `TTFT 0.6s (x̄1.1s)` | Waiting, streaming | **Time to first token** of the request in flight, then the serving model's average TTFT in parentheses. From sending the request until the first piece of the answer (text, thinking or tool call) arrives; when that piece is thinking and the provider announced the start of the thinking block earlier, until that announcement. It counts up while waiting (also while the model thinks without showing it) and freezes when the first piece arrives. |
+| `TTFT x̄1.0s` | Working, idle | **Average TTFT** of the current model; `TTFT -` while it has none. |
+| `↓1.2K` | Streaming, working, idle | **Output tokens** the model wrote as answer text and tool-call arguments, without thinking. While streaming it is an estimate for the current request (shown once content has arrived); while working, the total of the run's finished requests; when idle, the total over the session. |
+| `⠿1.9K 4.0s` | Streaming, idle | **Thinking**: the number of reasoning tokens, then how long the model has spent thinking in this request (from the start to the end of its thinking blocks, silences included). While the model thinks without showing its thoughts only the time is shown (`⠿4.0s`). The time is left out when it is under 0.05 s. When idle the field is the session's thinking tokens alone (`⠿2.1K`), left out when no provider reported or streamed any. |
+| `2➤` | Waiting, streaming, working, idle | **Requests.** While a request is in flight: which request of the run it is, shown from the second on. While working: how many requests the run has made so far. When idle: how many the session has made. Requests that failed with an error do not count. |
+| `run 12.3s` | Working | Time since the run started. Keeps counting while tools execute. |
+| `3 runs in 4m 12s` | Idle | **Runs** (prompts) on the branch and their summed wall-clock time, tools and waiting included (`1 run in 18.4s` for one). |
+| `↑40K ◎88%` | Idle | **Input tokens** sent to the model, added up over every request of the session. Each request re-sends the conversation, so this is what you pay for. Cached tokens are included; `◎` is the share of that input read from the provider's prompt cache, left out when nothing came from the cache. The field is left out when no input was reported. |
+| `$0.050` | Idle | **Cost** in US dollars, added up over the session. Shown only when a model has a price in Pi. |
 
 ### Markers
 
-| Text | Symbol | Meaning |
-|---|---|---|
-| `⠋⠙⠹…` | `⠋⠙⠹…` | A run is active. Turning animation off shows the first frame without rotating. |
-| (none) | `✓` | Summary of a finished run. |
-| `aborted` | `✗` | Summary of a run you stopped with Escape. |
-| `session` | `Σ` | Session average instead of the last run. |
-| (none) | `·` | No run measured yet. |
-| `~` before a number | `~` before a number | The number rests on an estimate. While streaming: pi-tps has not yet learned how this model counts that kind of token (answer and thinking are learned separately), so the figure may be off by tens of percent; `out` and `think` are marked by their own kind, the speed while tokens of an unlearned kind are in its window. In a summary: the provider did not report the numbers needed for some request, so part of the figure was estimated; a speed is marked when a request it was computed from had no reported output count, `out` and `think` also when thinking tokens had to be estimated because the provider reported none. |
-| `—` | `—` | Not known: not measured yet, or not measurable (for example a run with only very short answers). |
+| Marker | Meaning |
+|---|---|
+| `⠋⠙⠹…` | A run is active. Turning animation off shows the first frame without rotating. |
+| `✓` | The last run finished normally. |
+| `✗` | You stopped the last run with Escape. |
+| `x̄` | The figure after it is an average: `x` with a combining macron, the sign of a mean. |
+| `↯` | The average after it is a burst throughput, not a generation speed. |
+| `-` | Not known: not measured yet, or not measurable (for example a model whose requests were all too short to rate). |
 
-Except for the speed, every field uses the base colour (`dim` by default, see `baseColor`).
+### Averages
 
-### One line, field by field
+The averages belong to one provider and model and cover the requests that model served on the current branch, in order, so they come back after resume, `/reload` and `/tree`. Each average starts as the plain mean of the model's first ten samples and then moves by a tenth of the difference to each new one, so a single slow or fast request barely changes it; see [Measurement](#measurement) for which requests count. The figures in parentheses never include the request in flight.
 
-The summary `TPS 110.5 tok/s · TTFT 0.7s · 18.4s · in 6.2K (cache 92%) · out 1.4K · think 94 4.1s · stall 1.2s×1 · req 3 · $0.0018`, or `✓ »110.5/s ⇥0.7s 18.4s ↑6.2K ↻92% ↓1.4K ✻94 4.1s ‖1.2s×1 ×3 $0.0018` in the symbol style, reads:
+While a request is in flight the averages are those of the model serving it: the selected model until the provider names the serving model, which behind a virtual model is the physical one. Otherwise they are those of the **current model**: the model you selected, or, when the last request on the branch was sent under that selection, the model that served it (so a virtual model shows the averages of the model behind it). Selecting another model changes the idle readout at once.
 
-1. `✓` (symbols only): the run has finished normally.
-2. `TPS 110.5 tok/s` / `»110.5/s`: while thinking and writing, the model generated 110.5 tokens per second.
-3. `TTFT 0.7s` / `⇥0.7s`: on average each request waited 0.7 s for its first token.
-4. `18.4s`: the whole prompt took 18.4 s from sending to finished, tools included.
-5. `in 6.2K (cache 92%)` / `↑6.2K ↻92%`: the three requests sent 6 200 input tokens in total, 92 % of them from the prompt cache.
-6. `out 1.4K` / `↓1.4K`: the model wrote 1 400 tokens of answer and tool calls.
-7. `think 94 4.1s` / `✻94 4.1s`: it also produced 94 thinking tokens and spent 4.1 s thinking.
-8. `stall 1.2s×1` / `‖1.2s×1`: the stream paused once, for 1.2 s.
-9. `req 3` / `×3`: the prompt took three requests (for example two tool calls and the final answer).
-10. `$0.0018`: the run cost 0.18 US cents.
+### Colours
+
+The live TPS and TTFT are coloured; the `TPS` label after the live number and the `TTFT` label before the live time share its colour. Each metric has one of two modes (`tps.mode`, `ttft.mode`, per model through `overrides`):
+
+- **`relative`** (the default) colours the live value by how it compares with the serving model's average: the TPS as a percentage of the average TPS, the TTFT as the average TTFT as a percentage of the live TTFT, so that a first token faster than usual reads high. By default 75 % or more is the theme's success colour, 40 % or more its warning colour, anything lower its error colour (green, yellow and red in most themes). A model that is slow but as fast as usual is therefore green.
+- **`absolute`** colours the value itself: by default TPS is the error colour below 30 tok/s, the warning colour from 30 and the success colour from 80; TTFT is the success colour below 3 s, the warning colour from 3 s and the error colour from 6 s.
+
+Relative mode uses the absolute thresholds for a metric while the model has no average of it (its first request), and for TPS while its only average is a burst throughput. A live `-`, and a live TTFT while a thinking phase without content is open (its time is thinking, not latency), use the base colour. When no run is active nothing is coloured by thresholds: `✓` uses the theme's success colour, `✗` its error colour, `↯` the `burstColor`, separators the `separatorColor`, and everything else, averages included, the `baseColor`.
 
 ### Number formats
 
@@ -116,18 +109,18 @@ All durations come from a monotonic clock (`performance.now`).
 
 - **Run.** Starts at the first `agent_start` after the previous run settled and ends at `agent_settled`. A run in which no request was measured (for example one that only errored) is not recorded.
 - **Request scope.** A request is measured from `before_provider_request` while an agent turn is active to the turn's assistant `message_end`. Cache warming, compaction and branch summaries run outside turns and are ignored, as are model calls that tools make after the assistant message ended. A repeated request before the stream started is taken for a retry and restarts the measurement; a request starting while the stream delivers deltas is ignored.
-- **Model identity.** The request starts under the selected model and switches to the model named in the assistant `message_start`: behind a virtual model that is the physical model, whose calibration ratio and thresholds then apply.
+- **Model identity.** The request starts under the selected model and switches to the model named in the assistant `message_start`: behind a virtual model that is the physical model, whose calibration ratio, averages and colour settings then apply. The record names the serving model and, when the selected model differs, the selected one as `requested`.
 - **TTFT**: request start to the first non-empty text, thinking or tool-call delta; when that delta is thinking and its block began with a `thinking_start` event, request start to that event. A thinking block that streams nothing does not end the wait. The time to the first visible text or tool call and the time to response headers are kept in the record.
 - **Thinking phases.** A thinking phase opens at `thinking_start` (or at a thinking delta when no start came first) and closes at `thinking_end`, at the next non-thinking event (`text_start`, `toolcall_start`, an output delta) or at the end of the request. The *thinking time* is the summed wall time of the phases, silences included: a model that thinks without streaming its thoughts, or streams a summary in a few chunks, is still thinking. Each record says whether its thinking was `none`, `hidden` (phases without deltas) or `streamed`.
 - **Output span.** Output deltas (text and tool-call arguments) have an *active span*: the gaps between consecutive output deltas of one phase. The gap between a thinking phase and the first output delta belongs to neither.
 - **Stalls.** A gap of 500 ms or more between two consecutive output deltas is a stall. Consecutive stalled gaps are one stall event. Stall time is excluded from the output span; the gap before the first delta is TTFT, and gaps inside a thinking phase or around a phase change are not stalls.
-- **Generation time and rate.** A request's generation time is its thinking time plus its output span. Its TPS is its *generated tokens* over that time, when the time is at least 1 s: `usage.output` (which always includes reasoning) when a thinking phase was observed, else `usage.output` minus the reported reasoning tokens, because their time is hidden in TTFT and not guessed. Without `usage.output` the calibrated estimate is used and the figure is marked estimated. The record also keeps `outputTps` (visible output over the output span) and `thinkingTps` (thinking tokens over the thinking time). Negative or non-finite usage counts are treated as 0.
-- **Thinking tokens.** `usage.reasoning` when it is positive (capped at the output), else, when thinking was streamed, the calibrated thinking estimate (marked estimated). A reported `0` next to streamed thinking means "no breakdown", not "no reasoning": OpenAI-compatible backends such as Ollama and llama.cpp always report 0. Visible output is the output minus the thinking tokens.
+- **Generation time and rate.** A request's generation time is its thinking time plus its output span. Its TPS is its *generated tokens* over that time, when the time is at least 1 s: `usage.output` (which always includes reasoning) when a thinking phase was observed, else `usage.output` minus the reported reasoning tokens, because their time is hidden in TTFT and not guessed. Without `usage.output` the calibrated estimate is used and the record is marked `estimated`. The record also keeps `outputTps` (visible output over the output span) and `thinkingTps` (thinking tokens over the thinking time). Negative or non-finite usage counts are treated as 0.
+- **Thinking tokens.** `usage.reasoning` when it is positive (capped at the output), else, when thinking was streamed, the calibrated thinking estimate. A reported `0` next to streamed thinking means "no breakdown", not "no reasoning": OpenAI-compatible backends such as Ollama and llama.cpp always report 0. Visible output is the output minus the thinking tokens.
 - **Live TPS.** The generation rate over the last 5 s. Each delta's calibrated tokens (output and thinking, each kind with its own ratio) are attributed to the interval since the previous delta of the same phase; intervals are clipped to the window and their tokens prorated by the share inside it. The first delta of a phase, intervals across a phase change and output stalls count neither tokens nor time, so the first chunk (generated during TTFT) does not inflate the start. The time since the last delta counts while a thinking phase that has streamed is open, or while output flows without a stall. Deltas of one network read (less than 1 ms apart) are one arrival. The figure is unavailable until the window holds 1.5 s of counted time and while a thinking phase without deltas is open; after continuous output it survives a pause of up to 3.5 s and returns 1.5 s after output resumes from a longer one.
-- **Run and session TPS.** Summed generated tokens over summed generation time, over settled, non-burst requests with at least 1 s of generation time. This equals the requests' own rates averaged with their generation times as weights, so a request, a run of one request and a session of one run show the same figure. Shorter requests, typically tool calls without thinking, are left out: their reported output includes tool-call framing that is never streamed, which would inflate the rate; a tool call after a few seconds of thinking does count. Aborted requests are used only when nothing else qualifies, so an aborted run still shows a rate. When every request was a burst, the burst throughput (output tokens over elapsed time) is shown instead; otherwise the TPS is `—`.
-- **Run and session sums.** TTFT is the mean over non-aborted requests (aborted ones when there are no others); tokens, thinking tokens and time, stalls and cost are summed over all requests, aborted and burst ones included.
-- **Burst.** Only output deltas are burst evidence: a thinking summary arrives in a few chunks at the provider's cadence. Output deltas less than 1 ms apart arrived in one network read and form one batch. A request is burst delivery when its output stream of at least 50 tokens arrived in fewer than 5 batches (including no deltas at all; shorter replies are just too short to measure), when one 100 ms window carries at least 50 % of its arriving output tokens (estimate corrections excluded) while the output stream (first to last output delta) lasted more than 1 s, or when its generation rate exceeds 10 000 tokens per second. The output stream's token count is `usage.output` minus a positive `usage.reasoning`; `usage.output` alone when no thinking phase was observed and no reasoning was reported; otherwise the calibrated estimate of the output deltas. Bursts are excluded from calibration and TPS.
-- **Aborted** requests (Escape) keep a partial record. They never feed calibration, and they count toward the TPS and mean TTFT only when no settled request qualifies (so an aborted run still shows its partial figures); their tokens and cost always count. **Errored** and **deferred** requests produce no record; the run continues, and the readout shows the working state until the next request, for example Pi's automatic retry.
+- **Averages.** Each provider and model has three averages over the settled requests it served on the branch, replayed oldest first: the **TPS** average from the generation rate of each non-burst request with at least 1 s of generation time, the **burst** average from the throughput of each burst request, and the **TTFT** average from every settled request, bursts included (their first token really arrived that late). Only positive samples count: a TTFT rounds to 0 when the first token arrives within 0.5 ms, and an average of 0 could never move again. The first ten samples of an average form their plain mean, so a slow cold start is diluted within a few requests instead of anchoring the figure; from the eleventh on, each sample is clamped to between a third of and three times the current average and folded in with weight 0.1, so the average remembers about the last twenty requests, one outlier moves it by at most +20 % or −6.7 %, and a lasting change still shows within a few dozen requests. Shorter requests, typically tool calls without thinking, have no rate of their own: their reported output includes tool-call framing that is never streamed. Aborted requests feed no average. An average is updated when its request ends, before the next readout, so the working readout already includes it.
+- **Session totals.** Summed over every run on the branch, aborted and burst ones included: the runs and their wall-clock time, the requests, input with cache reads and writes, cache reads, visible output (output minus thinking), thinking tokens, and the cost of the requests that carry one.
+- **Burst.** Only output deltas are burst evidence: a thinking summary arrives in a few chunks at the provider's cadence. Output deltas less than 1 ms apart arrived in one network read and form one batch. A request is burst delivery when its output stream of at least 50 tokens arrived in fewer than 5 batches (including no deltas at all; shorter replies are just too short to measure), when one 100 ms window carries at least 50 % of its arriving output tokens (estimate corrections excluded) while the output stream (first to last output delta) lasted more than 1 s, or when its generation rate exceeds 10 000 tokens per second. The output stream's token count is `usage.output` minus a positive `usage.reasoning`; `usage.output` alone when no thinking phase was observed and no reasoning was reported; otherwise the calibrated estimate of the output deltas. Bursts are excluded from calibration and the TPS average; their throughput feeds the burst average, their TTFT the TTFT average, and their tokens and cost the session totals.
+- **Aborted** requests (Escape) keep a partial record. They feed neither calibration nor any average, because they stop at an arbitrary point; their tokens and cost count toward the session totals. **Errored** and **deferred** requests produce no record; the run continues, and the readout shows the working state until the next request, for example Pi's automatic retry.
 - **Cost** is taken from `usage.cost.total` only when it is greater than zero.
 
 ### Thinking by backend
@@ -153,17 +146,23 @@ Each model has two ratios, learned separately with the same exponential moving a
 - **Output ratio**, clamped to 0.25–4. With a positive `usage.reasoning` the sample compares the visible output with the output estimate (`usage.output − usage.reasoning` against the estimate of text and tool calls), because streamed thinking is often a summary. Without one it compares `usage.output` with the estimate of everything streamed.
 - **Thinking ratio**, clamped to 0.25–100: `usage.reasoning` over the raw thinking estimate, only when thinking was streamed and `usage.reasoning` is positive. It is near 1 for models that stream their full chain of thought and can reach 50 or more for models that stream a summary, so the live thinking count and rate of such models approach the reasoning they are billed for instead of the summary's length.
 
-Ratios are stored per `<provider>/<model>` under both the response model and the requested model, so a new request can look its ratios up before the provider names the response model.
+Ratios are stored per `<provider>/<model>` under both the response model the provider reports (`responseModel`) and the model id of the serving model (`model`), so a new request can look its ratios up before the provider names the response model. They are never stored under a selected virtual model (`requested`).
+
+With `"calibration": false` in the [configuration](#configuration) nothing is learned: live counts and the live TPS use the raw estimate (a factor of 1), a request without reported usage records its raw estimate, and the calibration directory is neither read nor written, so none of its warnings appear.
 
 ### Limitations
 
-- Estimates are heuristic. Uncalibrated live figures (`~`) can be off by tens of percent, most for code and CJK text, until the first calibrating request settles. Summary lengths do not scale linearly with the reasoning behind them, so the thinking ratio of summary models stays noisy.
-- When a provider reports reasoning tokens but shows no thinking phase (for example an OpenAI reasoning model behind a Chat Completions proxy without `reasoning_content`), their time cannot be separated from TTFT: the speed then rests on the visible output, and `think` shows the count without a duration.
+- Estimates are heuristic. Live figures of a model without calibration can be off by tens of percent, most for code and CJK text, until the first calibrating request settles; they carry no marker. Summary lengths do not scale linearly with the reasoning behind them, so the thinking ratio of summary models stays noisy.
+- When a provider reports reasoning tokens but shows no thinking phase (for example an OpenAI reasoning model behind a Chat Completions proxy without `reasoning_content`), their time cannot be separated from TTFT: the speed then rests on the visible output, the live readout shows no thinking field, and the tokens count toward the session's `⠿` total.
 - Backends that synthesise the start of a thinking block from its first chunk (OpenAI Completions, Google, Mistral, Bedrock; see the table above) hide the thinking before that chunk in TTFT, so the rate of a summary model behind them is an upper bound. Nothing in the stream tells such a start from a real one, so it is not marked.
 - A thinking phase with a real network stall is counted as thinking: the two cannot be told apart.
 - A proxy that buffers a whole chain of thought and flushes it with a short answer (under 50 visible tokens) is not caught as burst. Such a request has no rate of its own anyway.
-- The live rate leaves out the first chunk of each phase; the settled rate rests on `usage.output`, which includes it. The settled figure is the authoritative one.
-- The colour thresholds now judge a rate that includes thinking. For models that stream their full chain of thought nothing changes; summary and hidden-reasoning models are judged by their reasoning rate, so per-model `overrides` may need adjusting.
+- The live rate leaves out the first chunk of each phase; the settled rate rests on `usage.output`, which includes it. The settled rate, which feeds the average, is the authoritative one.
+- The rate includes thinking. Relative colours compare it with the same model's average, which includes thinking too; absolute thresholds judge summary and hidden-reasoning models by their reasoning rate, so per-model `overrides` may need adjusting. Models with hidden thinking fold the thinking time into TTFT, and so does their TTFT average, so their relative TTFT colour stays comparable within the model.
+- Relative colours show how a request compares with the model's usual figures, not whether the model is fast: a slow model at its usual speed is green. Set `mode` to `"absolute"` for a metric, globally or per model, to judge the value itself.
+- Averages cover the requests of the current branch only: a model that served requests in other sessions starts without averages in a new one.
+- `x̄` is `x` followed by a combining macron (U+0304). pi-tui counts it as one column, so truncation stays correct, but some terminal fonts draw the macron slightly off-centre.
+- `↑`, `↓` and `◎` are East Asian ambiguous-width characters. Terminals configured to draw such characters double-wide misalign the footer, because pi-tui counts one column for each.
 - Calibration needs a filesystem with hard links (all common local filesystems); without them it stays per session, with one warning.
 - Providers that deliver text in chunks separated by 500 ms or more (observed with some proxies) have a short active output span, so their TPS rests on little data or is unavailable.
 - A model call that another extension makes between the turn's provider request and the start of its stream is taken for a retry.
@@ -178,20 +177,27 @@ Read from `~/.pi/agent/pi-tps.json` (Pi's agent directory, `getAgentDir()`) at s
 |---|---|---|---|
 | `enabled` | boolean | `true` | Initial visibility of the readout |
 | `persist` | boolean | `true` | Append a `pi-tps` entry per run. When `false`, runs live in memory, start empty at every session start and do not follow `/tree` |
-| `labels` | `"text"` \| `"symbols"` | `"text"` | Field labels: words (`TPS 48.6 tok/s · TTFT 1.2s`) or single-cell symbols (`»48.6/s ⇥1.2s`) |
-| `summaryMode` | `"last"` \| `"session"` | `"last"` | Initial idle readout: the last run's summary or the session average |
-| `baseColor` | colour | `"dim"` | Colour of every field except the TPS |
+| `calibration` | boolean | `true` | Learn calibration ratios (see [Estimation and calibration](#estimation-and-calibration)). When `false`, live counts use the raw estimate and the calibration directory is neither read nor written |
+| `separator` | non-empty string without control characters | `" \| "` | Drawn between fields |
+| `baseColor` | colour | `"dim"` | Colour of the spinner, the averages, the labels outside the live figures and every other field |
+| `separatorColor` | colour | `"borderMuted"` | Colour of the separator |
+| `burstColor` | colour | `"mdLink"` | Colour of the `↯` before a burst throughput |
 | `animation.enabled` | boolean | `true` | Rotate the spinner; when `false` the readout redraws only when a value changes |
 | `animation.intervalMs` | number from 50 to 1000 | `100` | Refresh interval while a run is active |
 | `animation.frames` | non-empty strings without control characters | braille spinner `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | Spinner frames |
-| `thresholds` | threshold list | `0→error, 30→warning, 80→success` | Colour of the TPS (the generation rate, thinking included) |
-| `overrides` | object of threshold lists | `{}` | Thresholds per provider and model |
+| `tps.mode` | `"relative"` \| `"absolute"` | `"relative"` | How the live TPS is coloured (see [Colours](#colours)) |
+| `tps.relative` | threshold list, percent of the model's average TPS | `0→error, 40→warning, 75→success` | Bands of the live TPS in relative mode |
+| `tps.absolute` | threshold list, tokens per second | `0→error, 30→warning, 80→success` | Bands of the live TPS in absolute mode, and in relative mode while the model has no TPS average |
+| `ttft.mode` | `"relative"` \| `"absolute"` | `"relative"` | How the live TTFT is coloured |
+| `ttft.relative` | threshold list, the model's average TTFT as percent of the live TTFT | `0→error, 40→warning, 75→success` | Bands of the live TTFT in relative mode |
+| `ttft.absolute` | threshold list, seconds | `0→success, 3→warning, 6→error` | Bands of the live TTFT in absolute mode, and in relative mode while the model has no TTFT average |
+| `overrides` | object of `{ "tps"?, "ttft"? }` | `{}` | `tps` and `ttft` settings per provider and model |
 
-A **threshold list** is an array of `{ "min": number, "color": colour }`, in any order. The TPS uses the colour of the highest `min` not above it (of equal `min`s, the later entry); below the lowest `min`, or with an empty list, it uses `baseColor`. The colour follows the model that produced the figure: the serving model of the live request, the last contributing model of a summary.
+A **threshold list** is an array of `{ "min": number, "color": colour }`, in any order. A value takes the colour of the highest `min` not above it (of equal `min`s, the later entry); below the lowest `min`, or with an empty list, it uses `baseColor`. Relative lists are in percent, so that `75` means "at least three quarters of the model's usual figure"; for TTFT the percentage is the average over the live value, so a faster first token than usual reads above 100.
 
 A **colour** is a Pi theme token (`success`, `warning`, `error`, `accent`, `dim`, `muted`, `text`, or any other foreground token of the theme), which follows the active theme, or a hex colour `#rgb` / `#rrggbb`, rendered in truecolor or mapped to the nearest palette colour by Pi.
 
-**Override keys** match case-insensitively:
+An **override** maps a match key to an object with optional `tps` and `ttft` nodes of the same shape as the top-level ones (`mode`, `relative`, `absolute`). It applies to the model serving the live request. **Override keys** match case-insensitively:
 
 | Key | Matches |
 |---|---|
@@ -201,34 +207,33 @@ A **colour** is a Pi theme token (`success`, `warning`, `error`, `accent`, `dim`
 | `provider/*` | every model of that provider |
 | `*` | every model |
 
-When several keys match, the first level in this order wins: exact `provider/model`, `provider/<glob>`, model-only exact, model-only glob, `provider/*`, `*`, then the global `thresholds`. Within one level the pattern with more literal characters wins, then the first in the file. Only the first `/` separates provider and model, so `openrouter/anthropic/claude-*` targets OpenRouter's `anthropic/claude-*` models.
+When several keys match, only one override applies: the first level in this order wins, exact `provider/model`, `provider/<glob>`, model-only exact, model-only glob, `provider/*`, `*`. Within one level the pattern with more literal characters wins, then the first in the file. Every `mode`, `relative` and `absolute` that the applied override does not set comes from the top-level `tps` and `ttft`; settings of other matching overrides are never combined with it. Only the first `/` separates provider and model, so `openrouter/anthropic/claude-*` targets OpenRouter's `anthropic/claude-*` models.
+
+**Removed keys.** `labels`, `summaryMode` and the top-level `thresholds` of earlier versions are gone; each produces one "unknown setting" warning and is ignored. An override whose value is a threshold list (the earlier format) produces one warning and is ignored. To keep the earlier colouring of the TPS, move the old `thresholds` list to `tps.absolute` and set `tps.mode` to `"absolute"`; move an old override list `"key": [...]` to `"key": { "tps": { "mode": "absolute", "absolute": [...] } }`.
 
 <!-- example-config: test/config.test.ts loads this block and expects no warnings -->
 ```json
 {
-	"labels": "symbols",
-	"summaryMode": "session",
+	"separator": " · ",
 	"baseColor": "muted",
 	"animation": { "enabled": true, "intervalMs": 120 },
-	"thresholds": [
-		{ "min": 0, "color": "error" },
-		{ "min": 30, "color": "warning" },
-		{ "min": 80, "color": "success" }
-	],
-	"overrides": {
-		"anthropic/claude-opus-*": [
+	"tps": {
+		"mode": "relative",
+		"relative": [
 			{ "min": 0, "color": "error" },
-			{ "min": 20, "color": "warning" },
-			{ "min": 50, "color": "success" }
-		],
-		"gpt-5*": [
-			{ "min": 0, "color": "warning" },
-			{ "min": 100, "color": "success" }
-		],
-		"ollama/*": [
-			{ "min": 0, "color": "#ff8800" },
-			{ "min": 15, "color": "accent" }
+			{ "min": 50, "color": "warning" },
+			{ "min": 80, "color": "success" }
 		]
+	},
+	"ttft": { "mode": "absolute" },
+	"overrides": {
+		"anthropic/claude-opus-*": {
+			"ttft": { "absolute": [{ "min": 0, "color": "success" }, { "min": 8, "color": "warning" }, { "min": 15, "color": "error" }] }
+		},
+		"gpt-5*": { "tps": { "mode": "absolute" } },
+		"ollama/*": {
+			"tps": { "mode": "absolute", "absolute": [{ "min": 0, "color": "#ff8800" }, { "min": 15, "color": "accent" }] }
+		}
 	}
 }
 ```
@@ -252,9 +257,15 @@ Other extensions can subscribe with `pi.events.on(channel, handler)`. Types are 
 | `pi-tps:run` | emitted | `RunRecord` of each run as it settles, equal to the persisted entry data, with or without persistence |
 | `pi-tps:request` | listened | Any emit makes pi-tps re-emit the current snapshot on `pi-tps:status` |
 
-`StatusSnapshot` is one of `{ phase: "waiting" | "streaming", provider, model, request, elapsedMs, ttftMs?, liveTps?, outputTokens, thinkingTokens?, thinkingMs?, thinking, calibrated, thinkingCalibrated, tpsCalibrated }` (`ttftMs` is absent until content arrived; `thinking` is `none`, `hidden` or `streamed`; the three flags say whether the output count, the thinking count and the live TPS rest on calibrated ratios), `{ phase: "working", elapsedMs, requests, outputTokens, estimated }`, `{ phase: "run", run: RunSummary }`, `{ phase: "session", session: SessionSummary }` or `{ phase: "empty", mode }`.
+`StatusSnapshot` is one of:
 
-`RunRecord` (`version: 2`) holds `startedAt`, `elapsedMs`, `aborted` and `requests`. Each `RequestRecord` holds `timestamp`, `provider`, `model`, `responseModel?`, `outcome` (`settled` | `aborted`), `burst`, `burstReason?` (`few-batches` | `cluster` | `rate`), `ttftMs?`, `ttftTextMs?`, `headersMs?`, `elapsedMs`, `outputMs`, `generationMs` (thinking time plus output span), `generatedTokens` (the tokens the rate counts), `tps?` (the generation rate), `outputTps?`, `thinkingTps?`, `throughputTps?`, `thinkingMs?` (thinking time), `thinkingTokens?`, `thinking` (`none` | `hidden` | `streamed`), `estimated` (no reported `usage.output`; streamed thinking without a positive `reasoningTokens` has estimated `thinkingTokens` as well), `inputTokens`, `outputTokens` (including thinking), `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens?`, `deltaCount`, `stallCount`, `stallMs`, `cost?` and `clockSkewMs?`. Entries with another `version` or another `customType` (for example `"tps"` from other TPS extensions) are ignored.
+- `{ phase: "waiting" | "streaming", provider, model, request, elapsedMs, ttftMs?, liveTps?, outputTokens, thinkingTokens?, thinkingMs?, thinking, average }` for the request in flight: `provider` and `model` name the serving model, `ttftMs` is absent until content arrived, `thinking` is `none`, `hidden` or `streamed`, and `average` holds the serving model's averages without this request.
+- `{ phase: "working", elapsedMs, requests, outputTokens, average }` between two requests of a run, with the current model's averages.
+- `{ phase: "idle", average, session? }` when no run is active, with the current model's averages and, when the branch holds runs, `session`: `{ runs, elapsedMs, requests, inputTokens, cacheReadTokens, cacheWriteTokens, visibleOutputTokens, thinkingTokens, cost?, lastAborted }` (`inputTokens` without cache reads and writes, as in the records; `lastAborted` is the last run's outcome).
+
+`average` is `{ tps?, burstTps?, ttftMs? }`, each present once the model has a sample of it.
+
+`RunRecord` (`version: 2`) holds `startedAt`, `elapsedMs`, `aborted` and `requests`. Each `RequestRecord` holds `timestamp`, `provider`, `model` (the serving model), `responseModel?`, `requested?` (`{ provider, model }`, the selected model when it differs from the serving one, as behind a virtual model; absent in records of earlier versions, which read as sent under their serving model), `outcome` (`settled` | `aborted`), `burst`, `burstReason?` (`few-batches` | `cluster` | `rate`), `ttftMs?`, `ttftTextMs?`, `headersMs?`, `elapsedMs`, `outputMs`, `generationMs` (thinking time plus output span), `generatedTokens` (the tokens the rate counts), `tps?` (the generation rate), `outputTps?`, `thinkingTps?`, `throughputTps?`, `thinkingMs?` (thinking time), `thinkingTokens?`, `thinking` (`none` | `hidden` | `streamed`), `estimated` (no reported `usage.output`; streamed thinking without a positive `reasoningTokens` has estimated `thinkingTokens` as well), `inputTokens`, `outputTokens` (including thinking), `cacheReadTokens`, `cacheWriteTokens`, `reasoningTokens?`, `deltaCount`, `stallCount`, `stallMs`, `cost?` and `clockSkewMs?`. Entries with another `version` or another `customType` (for example `"tps"` from other TPS extensions) are ignored.
 
 In `rpc`, `json` and `print` modes pi-tps measures, persists and broadcasts, but never calls `setStatus`.
 

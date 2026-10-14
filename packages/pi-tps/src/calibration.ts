@@ -463,3 +463,29 @@ export class CalibrationStore {
 		return `pi-tps: cannot write ${this.dir}: ${errorMessage(error)}; calibration is kept for this session and retried`;
 	}
 }
+
+/** What a session reads and writes of the calibration; {@link CalibrationStore} is the enabled form. */
+export interface SessionCalibration {
+	ratios(key: string): CalibrationRatios;
+	update(key: string, kind: CalibrationKind, sample: CalibrationSample, now: number): string | undefined;
+	close(): string | undefined;
+}
+
+/** Disabled calibration: every factor is 1, and nothing is read, written or warned about. */
+const NO_CALIBRATION: SessionCalibration = {
+	ratios: () => ({}),
+	update: () => undefined,
+	close: () => undefined,
+};
+
+/** Opens the calibration of a session, loading the newest version only when calibration is enabled. */
+export function openCalibration(
+	enabled: boolean,
+	dir: string,
+	files: FileLayer,
+): { calibration: SessionCalibration; warning?: string } {
+	if (!enabled) return { calibration: NO_CALIBRATION };
+	const store = new CalibrationStore(dir, files);
+	const warning = store.load();
+	return warning === undefined ? { calibration: store } : { calibration: store, warning };
+}

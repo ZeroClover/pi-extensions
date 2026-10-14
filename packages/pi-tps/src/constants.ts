@@ -31,6 +31,15 @@ export const BURST_CLUSTER_MIN_SPAN_MS = 1000;
 /** Burst criterion: any computed generation rate above this is not real streaming. */
 export const MAX_PLAUSIBLE_TPS = 10_000;
 
+/** A model's first samples of a metric form their plain mean, so a slow cold start does not anchor the average. */
+export const AVERAGE_WARMUP_SAMPLES = 10;
+
+/** Weight of the newest sample in a model's moving average after the warm-up: a memory of about 20 requests. */
+export const AVERAGE_ALPHA = 0.1;
+
+/** After the warm-up a sample is clamped to between the average divided by this and the average times this. */
+export const AVERAGE_CLAMP_FACTOR = 3;
+
 /** Weight of the newest sample in the calibration moving average. */
 export const CALIBRATION_ALPHA = 0.3;
 

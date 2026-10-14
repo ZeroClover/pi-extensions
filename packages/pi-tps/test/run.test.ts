@@ -54,7 +54,6 @@ describe("RunTracker", () => {
 			elapsedMs: 4900,
 			requests: 1,
 			outputTokens: 100,
-			estimated: false,
 		});
 		tracker.add(request(200, 50));
 		tracker.add(request(300));
@@ -86,17 +85,6 @@ describe("RunTracker", () => {
 		expect(tracker.snapshot()?.outputTokens).toBe(300);
 		expect(tracker.requestCount).toBe(1);
 		expect(tracker.settle(true)?.aborted).toBe(true);
-	});
-
-	it("marks the working output when a request's thinking tokens are estimated", () => {
-		tracker.start(1);
-		const record = request(500, 200);
-		tracker.add(record);
-		expect(tracker.snapshot()?.estimated).toBe(true);
-		tracker.discard();
-		tracker.start(1);
-		tracker.add({ ...record, reasoningTokens: 200 });
-		expect(tracker.snapshot()?.estimated).toBe(false);
 	});
 
 	it("ignores records and has no snapshot while idle", () => {

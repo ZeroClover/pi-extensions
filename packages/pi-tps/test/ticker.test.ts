@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Clock } from "../src/clock.ts";
+import { defaultConfig } from "../src/config.ts";
 import { formatSnapshot, plainText } from "../src/format.ts";
 import { Measurement } from "../src/measurement.ts";
 import { StatusWriter } from "../src/render.ts";
@@ -39,6 +40,7 @@ class FakeTime implements Clock {
 }
 
 const FRAMES = ["⠋", "⠙", "⠹"];
+const METRICS = { tps: defaultConfig().tps, ttft: defaultConfig().ttft };
 
 function setup(animated: boolean) {
 	const time = new FakeTime();
@@ -50,7 +52,7 @@ function setup(animated: boolean) {
 		const snapshot = meter.snapshot();
 		if (!snapshot) return;
 		const indicator = animated ? (FRAMES[frame % FRAMES.length] ?? "") : (FRAMES[0] ?? "");
-		writer.set(plainText(formatSnapshot(snapshot, "text", indicator), "text"), write);
+		writer.set(plainText(formatSnapshot({ ...snapshot, average: {} }, indicator, METRICS)), write);
 	});
 	return { time, meter, written, ticker };
 }

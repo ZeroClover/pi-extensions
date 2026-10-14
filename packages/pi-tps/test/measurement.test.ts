@@ -165,8 +165,20 @@ describe("request lifecycle", () => {
 		meter.messageStart({ provider: "anthropic", model: "claude-sonnet-4", ratios: { output: 1.3 } });
 		stream("text", 500, 20, 100, 10);
 		const snapshot = meter.snapshot();
-		expect(snapshot).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4", calibrated: true, ttftMs: 500 });
+		expect(snapshot).toMatchObject({ provider: "anthropic", model: "claude-sonnet-4", ttftMs: 500 });
 		expect(snapshot?.outputTokens).toBeCloseTo(260);
+		const { record } = recorded(meter.end(end(250, { provider: "anthropic", model: "claude-sonnet-4" })));
+		expect(record).toMatchObject({
+			provider: "anthropic",
+			model: "claude-sonnet-4",
+			requested: { provider: "router", model: "auto" },
+		});
+	});
+
+	it("names no requested model when the selected model serves the request", () => {
+		start();
+		stream("text", 500, 20, 100, 10);
+		expect(recorded(meter.end(end(250))).record.requested).toBeUndefined();
 	});
 
 	it("reports waiting with a counting elapsed time before the first delta", () => {
@@ -750,23 +762,18 @@ describe("live generation rate", () => {
 		start({ ratios: { output: 1.2 } });
 		stream("text", 0, 21, 100, 5);
 		const snapshot = meter.snapshot();
-		expect(snapshot).toMatchObject({ calibrated: true, tpsCalibrated: true });
 		expect(snapshot?.outputTokens).toBeCloseTo(126);
 		// 100 raw tokens in the window, 120 calibrated, over 2 s.
 		expect(snapshot?.liveTps).toBeCloseTo(60);
 	});
 
-	it("marks the TPS while uncalibrated thinking tokens are in the window (output calibrated, thinking not)", () => {
-		start({ ratios: { output: 1 } });
+	it("uses a factor of 1 for an uncalibrated kind (output calibrated, thinking not)", () => {
+		start({ ratios: { output: 2 } });
 		stream("thinking", 0, 21, 100, 5);
-		expect(meter.snapshot()).toMatchObject({ calibrated: true, thinkingCalibrated: false, tpsCalibrated: false });
-		stream("text", 2100, 80, 100, 5);
-		expect(meter.snapshot()).toMatchObject({ calibrated: true, thinkingCalibrated: false, tpsCalibrated: true });
-	});
-
-	it("marks figures of an uncalibrated model", () => {
-		start();
-		expect(meter.snapshot()).toMatchObject({ calibrated: false, thinkingCalibrated: false });
+		const snapshot = meter.snapshot();
+		expect(snapshot?.thinkingTokens).toBe(105);
+		expect(snapshot?.liveTps).toBeCloseTo(50);
+		expect(Object.keys(snapshot ?? {})).not.toContain("calibrated");
 	});
 
 	it("counts only arriving tokens, not estimator corrections", () => {
