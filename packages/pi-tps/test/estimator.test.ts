@@ -1,5 +1,6 @@
+import { estimateTokenCount } from "tokenx";
 import { describe, expect, it } from "vitest";
-import { createDeltaEstimator, estimateTokens, StreamEstimator } from "../src/estimator.ts";
+import { createDeltaEstimator, StreamEstimator } from "../src/estimator.ts";
 
 // Reference counts were produced once with gpt-tokenizer (o200k_base and cl100k_base); they stand in for
 // the output tokens a provider would report for the same text.
@@ -35,9 +36,9 @@ function expectWithinTolerance(estimate: number, references: number[]): void {
 	}
 }
 
-describe("estimateTokens", () => {
+describe("estimateTokenCount", () => {
 	it("returns 0 for empty input", () => {
-		expect(estimateTokens("")).toBe(0);
+		expect(estimateTokenCount("")).toBe(0);
 	});
 
 	it.each([
@@ -45,7 +46,7 @@ describe("estimateTokens", () => {
 		["Chinese prose", CHINESE, CHINESE_REFERENCE],
 		["JSON tool arguments", TOOL_ARGUMENTS, TOOL_ARGUMENTS_REFERENCE],
 	])("estimates %s within 30 %% of provider counts", (_name, text, references) => {
-		expectWithinTolerance(estimateTokens(text), references);
+		expectWithinTolerance(estimateTokenCount(text), references);
 	});
 });
 
@@ -69,7 +70,7 @@ describe("StreamEstimator", () => {
 	});
 
 	it("matches the whole-text estimate for word-aligned English deltas", () => {
-		expect(streamed(ENGLISH.split(/(?<= )/))).toBe(estimateTokens(ENGLISH));
+		expect(streamed(ENGLISH.split(/(?<= )/))).toBe(estimateTokenCount(ENGLISH));
 	});
 });
 
@@ -87,7 +88,7 @@ describe("StreamEstimator chunk stability (any delta size)", () => {
 	];
 
 	it.each(exact)("matches the whole-text estimate exactly for %s", (_name, text) => {
-		const whole = estimateTokens(text);
+		const whole = estimateTokenCount(text);
 		for (const size of [1, 2, 3, 4, 7, 16, 128, 1000]) {
 			expect(streamed(chunks(text, size))).toBe(whole);
 		}
@@ -102,7 +103,7 @@ describe("StreamEstimator chunk stability (any delta size)", () => {
 			const increment = estimator.add(text.charAt(i));
 			increments.push(increment);
 			total += increment;
-			expect(total).toBe(estimateTokens(text.slice(0, i + 1)));
+			expect(total).toBe(estimateTokenCount(text.slice(0, i + 1)));
 		}
 		expect(total).toBe(3);
 		expect(increments.at(-1)).toBeLessThan(0);
@@ -117,7 +118,7 @@ describe("StreamEstimator chunk stability (any delta size)", () => {
 
 	it("keeps long uniform runs close to the whole-text estimate", () => {
 		const text = "1234567890".repeat(100);
-		const whole = estimateTokens(text);
+		const whole = estimateTokenCount(text);
 		for (const size of [1, 4, 128]) {
 			expect(Math.abs(streamed(chunks(text, size)) - whole)).toBeLessThanOrEqual(Math.max(2, whole * 0.02));
 		}

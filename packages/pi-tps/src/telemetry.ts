@@ -1,3 +1,5 @@
+import { finite, isRecord } from "./guards.ts";
+
 /** `customType` of the session entries holding run records. */
 export const TELEMETRY_CUSTOM_TYPE = "pi-tps";
 
@@ -185,10 +187,6 @@ export interface IdleSnapshot {
 
 export type StatusSnapshot = LiveSnapshot | WorkingSnapshot | IdleSnapshot;
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 const BURST_REASONS: readonly BurstReason[] = ["few-batches", "cluster", "rate"];
 
 function isBurstReason(value: unknown): value is BurstReason {
@@ -199,10 +197,6 @@ const THINKING_KINDS: readonly ThinkingKind[] = ["none", "hidden", "streamed"];
 
 function isThinkingKind(value: unknown): value is ThinkingKind {
 	return THINKING_KINDS.some((kind) => kind === value);
-}
-
-function finite(value: unknown): value is number {
-	return typeof value === "number" && Number.isFinite(value);
 }
 
 /** Counts, durations and rates in a record are never negative. */

@@ -170,9 +170,7 @@ interface Request {
 	 * Output deltas only, for burst detection: arrival time, arriving tokens, and whether the delta lies in the
 	 * backlog window that opens its output phase.
 	 */
-	outputAt: number[];
-	outputArrived: number[];
-	outputBacklog: boolean[];
+	output: { at: number[]; tokens: number[]; backlog: boolean[] };
 	/** End of the backlog window opened by the first output delta of the current output phase. */
 	outputBacklogEnd?: number;
 	/** Identifies the current phase: changes when a thinking block opens or closes. */
@@ -250,10 +248,11 @@ export class Measurement {
 		return this.request !== undefined;
 	}
 
-	turnStart(): void {
+	/** Returns true when a request without `message_end` was dropped. */
+	turnStart(): boolean {
 		this.turnActive = true;
 		this.turnClosed = false;
-		this.request = undefined;
+		return this.drop();
 	}
 
 	/** Returns true when a request without `message_end` was dropped. */
@@ -290,9 +289,7 @@ export class Measurement {
 			messageStarted: false,
 			estimator: this.createEstimator(),
 			live: { at: [], tokens: [], kinds: [], counted: [], floors: [] },
-			outputAt: [],
-			outputArrived: [],
-			outputBacklog: [],
+			output: { at: [], tokens: [], backlog: [] },
 			phase: 0,
 			thinking: "none",
 			thinkingMs: 0,
@@ -397,9 +394,9 @@ export class Measurement {
 			request.rawOutput += increment;
 			// Only the backlog that opens an output phase; a flush after a stall stays burst evidence.
 			if (!samePhase) request.outputBacklogEnd = now + BACKLOG_WINDOW_MS;
-			request.outputAt.push(now);
-			request.outputArrived.push(arrived);
-			request.outputBacklog.push(now <= (request.outputBacklogEnd ?? now));
+			request.output.at.push(now);
+			request.output.tokens.push(arrived);
+			request.output.backlog.push(now <= (request.outputBacklogEnd ?? now));
 		}
 	}
 
@@ -450,7 +447,7 @@ export class Measurement {
 			snapshot.thinkingMs = request.thinkingMs + (request.block ? now - request.block.startAt : 0);
 		}
 		if (request.thinking === "streamed") snapshot.thinkingTokens = request.rawThinking * factor.thinking;
-		const liveTps = this.liveRate(request, now, snapshot);
+		const liveTps = this.liveRate(request, now, snapshot, factor);
 		if (liveTps !== undefined) snapshot.liveTps = liveTps;
 		return snapshot;
 	}
@@ -462,13 +459,17 @@ export class Measurement {
 	 * backlog window, while output flows without a stall. An open thinking block that has streamed nothing yet has no
 	 * rate.
 	 */
-	private liveRate(request: Request, now: number, snapshot: LiveFigures): number | undefined {
+	private liveRate(
+		request: Request,
+		now: number,
+		snapshot: LiveFigures,
+		factor: Record<Kind, number>,
+	): number | undefined {
 		if (request.block) {
 			const thinkingMs = snapshot.thinkingMs ?? 0;
 			if (!request.block.streamed || thinkingMs < LIVE_MIN_COUNTED_MS) return undefined;
 			return (snapshot.thinkingTokens ?? 0) / (thinkingMs / 1000);
 		}
-		const factor = factors(request.context);
 		const figures = windowFigures(request.live, now - LIVE_WINDOW_MS, (kind) => factor[kind]);
 		let counted = figures.ms;
 		if (request.lastAt !== undefined && request.lastPhase === request.phase && now - request.lastAt < STALL_GAP_MS) {
@@ -526,7 +527,7 @@ function burstStreamTokens(
  * it is scaled by the counted share of the arriving estimate, so the reported count stays authoritative.
  */
 function countedOutput(request: Request, volume: number): { generatedTokens: number; generationMs: number } {
-	const arrived = request.outputArrived.reduce((sum, tokens) => sum + tokens, 0);
+	const arrived = request.output.tokens.reduce((sum, tokens) => sum + tokens, 0);
 	if (arrived <= 0) return { generatedTokens: 0, generationMs: 0 };
 	const counted = windowFigures(request.live, Number.NEGATIVE_INFINITY, () => 1);
 	return { generatedTokens: (volume * counted.tokens) / arrived, generationMs: counted.ms };
@@ -566,7 +567,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	const burstReason =
 		outcome === "settled"
 			? classifyBurst(
-					{ at: request.outputAt, tokens: request.outputArrived, backlog: request.outputBacklog },
+					request.output,
 					burstStreamTokens(reportedOutput, breakdown, request.thinking, estimatedOutput),
 					tps,
 				)
@@ -585,7 +586,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		model: message.model,
 		outcome,
 		burst: burstReason !== undefined,
-		elapsedMs: round(elapsedMs, 0),
+		elapsedMs: Math.round(elapsedMs),
 		// Rounded down so that a span below 1 s stays below it in the record.
 		outputMs: Math.floor(request.outputSpanMs),
 		// Unrounded, like `tps`, so that the rate can be recomputed from the record exactly.
@@ -599,7 +600,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 		cacheWriteTokens: count(usage.cacheWrite),
 		deltaCount: request.deltaCount,
 		stallCount: request.stallCount,
-		stallMs: round(request.stallMs, 0),
+		stallMs: Math.round(request.stallMs),
 	};
 	if (message.responseModel !== undefined && message.responseModel !== message.model) {
 		record.responseModel = message.responseModel;
@@ -607,9 +608,9 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	const { selected } = request;
 	if (selected.provider !== message.provider || selected.model !== message.model) record.requested = selected;
 	if (burstReason !== undefined) record.burstReason = burstReason;
-	if (request.firstAt !== undefined) record.ttftMs = round(request.firstAt - request.startAt, 0);
-	if (request.firstOutputAt !== undefined) record.ttftTextMs = round(request.firstOutputAt - request.startAt, 0);
-	if (request.headersAt !== undefined) record.headersMs = round(request.headersAt - request.startAt, 0);
+	if (request.firstAt !== undefined) record.ttftMs = Math.round(request.firstAt - request.startAt);
+	if (request.firstOutputAt !== undefined) record.ttftTextMs = Math.round(request.firstOutputAt - request.startAt);
+	if (request.headersAt !== undefined) record.headersMs = Math.round(request.headersAt - request.startAt);
 	if (tps !== undefined) record.tps = tps;
 	if (outputTps !== undefined) record.outputTps = round(outputTps, 2);
 	if (thinkingTps !== undefined) record.thinkingTps = round(thinkingTps, 2);
@@ -620,7 +621,7 @@ function settle(request: Request, message: EndInput, now: number, outcome: "sett
 	if (positive(usage.cost.total)) record.cost = usage.cost.total;
 	if (message.durationMs !== undefined) {
 		const skew = message.durationMs - elapsedMs;
-		if (Math.abs(skew) > CLOCK_SKEW_THRESHOLD_MS) record.clockSkewMs = round(skew, 0);
+		if (Math.abs(skew) > CLOCK_SKEW_THRESHOLD_MS) record.clockSkewMs = Math.round(skew);
 	}
 
 	if (outcome !== "settled" || burstReason !== undefined || reportedOutput === undefined) {

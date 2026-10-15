@@ -48,10 +48,10 @@ function setup(animated: boolean) {
 	const written: (string | undefined)[] = [];
 	const writer = new StatusWriter();
 	const write = (text: string | undefined) => written.push(text);
-	const ticker = new Ticker(time.schedule, 100, (frame) => {
+	const ticker: Ticker = new Ticker(time.schedule, 100, () => {
 		const snapshot = meter.snapshot();
 		if (!snapshot) return;
-		const indicator = animated ? (FRAMES[frame % FRAMES.length] ?? "") : (FRAMES[0] ?? "");
+		const indicator = animated ? (FRAMES[ticker.currentFrame % FRAMES.length] ?? "") : (FRAMES[0] ?? "");
 		writer.set(plainText(formatSnapshot({ ...snapshot, average: {} }, indicator, METRICS)), write);
 	});
 	return { time, meter, written, ticker };

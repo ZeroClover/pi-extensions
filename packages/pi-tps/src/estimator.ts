@@ -1,11 +1,6 @@
 import { estimateTokenCount } from "tokenx";
 import { ESTIMATOR_COMMIT_CHARS, ESTIMATOR_MAX_OPEN_CHARS } from "./constants.ts";
 
-/** Heuristic token count of a complete text. */
-export function estimateTokens(text: string): number {
-	return text.length === 0 ? 0 : estimateTokenCount(text);
-}
-
 // The characters at which tokenx splits text into segments: whitespace and these ASCII punctuation marks.
 const SEPARATOR = /[\s.,!?;(){}[\]<>:/\\|@#$%^&*+=`~_"-]/;
 
@@ -41,15 +36,15 @@ export class StreamEstimator {
 		if (delta.length === 0) return 0;
 		const text = this.open + delta;
 		const start = lastSegmentStart(text);
-		if (start > 0) this.committed += estimateTokens(text.slice(0, start));
+		if (start > 0) this.committed += estimateTokenCount(text.slice(0, start));
 		let open = text.slice(start);
 		while (open.length > ESTIMATOR_MAX_OPEN_CHARS) {
 			const end = chunkEnd(open, ESTIMATOR_COMMIT_CHARS);
-			this.committed += estimateTokens(open.slice(0, end));
+			this.committed += estimateTokenCount(open.slice(0, end));
 			open = open.slice(end);
 		}
 		this.open = open;
-		const total = this.committed + estimateTokens(open);
+		const total = this.committed + estimateTokenCount(open);
 		const increment = total - this.total;
 		this.total = total;
 		return increment;

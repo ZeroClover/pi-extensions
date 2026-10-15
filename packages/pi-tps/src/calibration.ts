@@ -8,6 +8,7 @@ import {
 	CALIBRATION_MIN_RATIO,
 } from "./constants.ts";
 import { errorMessage, type FileLayer } from "./files.ts";
+import { finite, isRecord } from "./guards.ts";
 
 /** Directory of the calibration versions inside Pi's agent directory. */
 export const CALIBRATION_DIR_NAME = "pi-tps-calibration";
@@ -43,6 +44,13 @@ export interface CalibrationRatios {
 export interface CalibrationSample {
 	reported: number;
 	estimated: number;
+}
+
+/** A sample to store under one model key. */
+export interface KeyedSample {
+	key: string;
+	kind: CalibrationKind;
+	sample: CalibrationSample;
 }
 
 /** Per session: the highest sample number applied, and when the session last published. */
@@ -113,16 +121,12 @@ export function nextEntry(
 	return entry;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 function parseRatio(kind: CalibrationKind, value: unknown): RatioEntry | undefined {
 	if (!isRecord(value)) return undefined;
 	const { ratio, samples, updatedAt } = value;
-	if (typeof ratio !== "number" || !Number.isFinite(ratio)) return undefined;
+	if (!finite(ratio)) return undefined;
 	if (typeof samples !== "number" || !Number.isInteger(samples) || samples < 1) return undefined;
-	if (typeof updatedAt !== "number" || !Number.isFinite(updatedAt)) return undefined;
+	if (!finite(updatedAt)) return undefined;
 	return { ratio: clampRatio(kind, ratio), samples, updatedAt };
 }
 
@@ -145,7 +149,7 @@ function parseWriter(value: unknown): WriterRecord | undefined {
 	if (!isRecord(value)) return undefined;
 	const { seq, at } = value;
 	if (typeof seq !== "number" || !Number.isInteger(seq) || seq < 0) return undefined;
-	if (typeof at !== "number" || !Number.isFinite(at)) return undefined;
+	if (!finite(at)) return undefined;
 	return { seq, at };
 }
 
@@ -293,10 +297,13 @@ export class CalibrationStore {
 		return this.models.get(key);
 	}
 
-	/** Applies one sample of one kind and publishes it. Returns a warning the first time writing fails. */
-	update(key: string, kind: CalibrationKind, sample: CalibrationSample, now: number): string | undefined {
-		if (!isCalibratable(sample)) return undefined;
-		this.pending.push({ seq: this.nextSeq++, key, kind, sample, at: now });
+	/** Applies the samples of one request and publishes them together. Returns a warning the first time writing fails. */
+	update(samples: readonly KeyedSample[], now: number): string | undefined {
+		const queued = this.pending.length;
+		for (const { key, kind, sample } of samples) {
+			if (isCalibratable(sample)) this.pending.push({ seq: this.nextSeq++, key, kind, sample, at: now });
+		}
+		if (this.pending.length === queued) return undefined;
 		this.models = replay(this.published, this.pending);
 		return this.flush();
 	}
@@ -383,8 +390,8 @@ export class CalibrationStore {
 	}
 
 	/**
-	 * Creates the version after the snapshot's and then removes old versions; true when the file was created (which
-	 * proves nothing more). `notePossibleCreation` runs as soon as the file may exist: when the creation reports
+	 * Creates the version after the snapshot's and then removes old versions. A creation proves nothing about the
+	 * samples; `notePossibleCreation` runs as soon as the file may exist: when the creation reports
 	 * success, before the cleanup that can still fail, and when the creation throws, since the file can exist although
 	 * the call failed.
 	 */
@@ -393,7 +400,7 @@ export class CalibrationStore {
 		models: ReadonlyMap<string, CalibrationEntry>,
 		writers: ReadonlyMap<string, WriterRecord>,
 		notePossibleCreation: () => void,
-	): boolean {
+	): void {
 		const file: CalibrationFile = {
 			version: FILE_VERSION,
 			models: Object.fromEntries(models),
@@ -407,10 +414,9 @@ export class CalibrationStore {
 			notePossibleCreation();
 			throw error;
 		}
-		if (!created) return false;
+		if (!created) return;
 		notePossibleCreation();
 		this.prune(version);
-		return true;
 	}
 
 	private path(version: number): string {
@@ -467,7 +473,7 @@ export class CalibrationStore {
 /** What a session reads and writes of the calibration; {@link CalibrationStore} is the enabled form. */
 export interface SessionCalibration {
 	ratios(key: string): CalibrationRatios;
-	update(key: string, kind: CalibrationKind, sample: CalibrationSample, now: number): string | undefined;
+	update(samples: readonly KeyedSample[], now: number): string | undefined;
 	close(): string | undefined;
 }
 

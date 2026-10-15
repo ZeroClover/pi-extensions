@@ -70,6 +70,10 @@ function loadConfig(path: string): { config: TpsConfig; warnings: string[] } {
 	}
 }
 
+function modelRef(model: { provider: string; id: string }): ModelRef {
+	return { provider: model.provider, model: model.id };
+}
+
 export default function (pi: ExtensionAPI): void {
 	let runtime: Runtime | undefined;
 
@@ -140,7 +144,7 @@ export default function (pi: ExtensionAPI): void {
 			visible: config.enabled,
 			runs: [],
 			averages: new ModelAverages(),
-			activeModel: ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined,
+			activeModel: ctx.model ? modelRef(ctx.model) : undefined,
 			liveMetrics: { tps: config.tps, ttft: config.ttft },
 			tickUi: undefined,
 			unsubscribeRequest: pi.events.on(REQUEST_CHANNEL, () => {
@@ -178,7 +182,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("model_select", (event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
-		rt.activeModel = { provider: event.model.provider, model: event.model.id };
+		rt.activeModel = modelRef(event.model);
 		publish(rt, ctx.ui);
 	});
 
@@ -207,9 +211,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("turn_start", (_event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
-		const dropped = rt.meter.active;
-		rt.meter.turnStart();
-		if (dropped) publish(rt, ctx.ui);
+		if (rt.meter.turnStart()) publish(rt, ctx.ui);
 	});
 
 	pi.on("turn_end", (_event, ctx) => {
@@ -226,7 +228,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.on("before_provider_request", (_event, ctx) => {
 		const rt = runtime;
 		if (!rt) return;
-		const model = rt.activeModel ?? (ctx.model ? { provider: ctx.model.provider, model: ctx.model.id } : undefined);
+		const model = rt.activeModel ?? (ctx.model ? modelRef(ctx.model) : undefined);
 		const provider = model?.provider ?? "unknown";
 		const id = model?.model ?? "unknown";
 		const started = rt.meter.requestStart({
@@ -276,14 +278,13 @@ export default function (pi: ExtensionAPI): void {
 			// Before publishing, so that the working readout's averages include the request.
 			rt.averages.fold(record);
 			pi.events.emit(TELEMETRY_CHANNEL, record);
-			for (const kind of CALIBRATION_KINDS) {
+			const keys = calibrationKeys(record.provider, record.model, record.responseModel);
+			const samples = CALIBRATION_KINDS.flatMap((kind) => {
 				const sample = outcome.calibration[kind];
-				if (!sample) continue;
-				for (const key of calibrationKeys(record.provider, record.model, record.responseModel)) {
-					const warning = rt.calibration.update(key, kind, sample, Date.now());
-					if (warning) ctx.ui.notify(warning, "warning");
-				}
-			}
+				return sample ? keys.map((key) => ({ key, kind, sample })) : [];
+			});
+			const warning = rt.calibration.update(samples, Date.now());
+			if (warning) ctx.ui.notify(warning, "warning");
 		}
 		publish(rt, ctx.ui);
 	});

@@ -98,15 +98,16 @@ describe("CalibrationStore on a real directory", () => {
 			};
 			const seed = new CalibrationStore(dir, nodeFiles);
 			seed.load();
-			seed.update("p/seed", "output", { reported: 100, estimated: 100 }, 0);
+			seed.update([{ key: "p/seed", kind: "output", sample: { reported: 100, estimated: 100 } }], 0);
 			const paused = new CalibrationStore(dir, pausing);
 			paused.load();
 			const other = new CalibrationStore(dir, nodeFiles);
 			other.load();
 			pause = () => {
-				for (let i = 0; i < 4; i++) other.update("p/b", "output", { reported: 100 + i, estimated: 100 }, i);
+				for (let i = 0; i < 4; i++)
+					other.update([{ key: "p/b", kind: "output", sample: { reported: 100 + i, estimated: 100 } }], i);
 			};
-			paused.update("p/a", "output", { reported: 200, estimated: 100 }, 10);
+			paused.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 10);
 			const restored = new CalibrationStore(dir, nodeFiles);
 			restored.load();
 			expect(restored.entry("p/a")).toEqual({ output: { ratio: 2, samples: 1, updatedAt: 10 } });
@@ -189,11 +190,43 @@ describe("thinking ratio", () => {
 	it("is stored and restored next to the output ratio", () => {
 		const dir = new MemoryDir();
 		const calibration = store(dir);
-		calibration.update("p/m", "output", { reported: 110, estimated: 100 }, 1);
-		calibration.update("p/m", "thinking", { reported: 800, estimated: 100 }, 2);
+		calibration.update([{ key: "p/m", kind: "output", sample: { reported: 110, estimated: 100 } }], 1);
+		calibration.update([{ key: "p/m", kind: "thinking", sample: { reported: 800, estimated: 100 } }], 2);
 		expect(calibration.ratios("p/m")).toEqual({ output: 1.1, thinking: 8 });
 		expect(store(dir).ratios("p/m")).toEqual({ output: 1.1, thinking: 8 });
 		expect(store(dir).ratios("q/n")).toEqual({ output: undefined, thinking: undefined });
+	});
+
+	it("stores all samples of one update with a single publish", () => {
+		const dir = new MemoryDir();
+		const calibration = store(dir);
+		const output = { reported: 110, estimated: 100 };
+		const thinking = { reported: 800, estimated: 100 };
+		const warning = calibration.update(
+			[
+				{ key: "p/served", kind: "output", sample: output },
+				{ key: "p/requested", kind: "output", sample: output },
+				{ key: "p/served", kind: "thinking", sample: thinking },
+				{ key: "p/requested", kind: "thinking", sample: { reported: 1, estimated: 1 } },
+			],
+			1,
+		);
+		expect(warning).toBeUndefined();
+		expect(dir.publishes).toBe(1);
+		const restored = store(dir);
+		expect(restored.ratios("p/served")).toEqual({ output: 1.1, thinking: 8 });
+		// The uncalibratable sample is skipped, and the record covers the samples that were numbered.
+		expect(restored.ratios("p/requested")).toEqual({ output: 1.1, thinking: undefined });
+		const newest = JSON.parse(dir.read(version(1)) ?? "{}");
+		expect(Object.values(newest.writers)).toEqual([{ seq: 3, at: expect.any(Number) }]);
+	});
+
+	it("does not publish an update without calibratable samples", () => {
+		const dir = new MemoryDir();
+		expect(
+			store(dir).update([{ key: "p/m", kind: "output", sample: { reported: 1, estimated: 1 } }], 1),
+		).toBeUndefined();
+		expect(dir.publishes).toBe(0);
 	});
 });
 
@@ -260,7 +293,9 @@ describe("CalibrationStore", () => {
 
 	it("publishes numbered versions that a new session restores (restart)", () => {
 		const dir = new MemoryDir();
-		expect(store(dir).update("a/b", "output", { reported: 1000, estimated: 800 }, 7)).toBeUndefined();
+		expect(
+			store(dir).update([{ key: "a/b", kind: "output", sample: { reported: 1000, estimated: 800 } }], 7),
+		).toBeUndefined();
 		expect(dir.files.has(version(1))).toBe(true);
 		expect(store(dir).entry("a/b")).toEqual({ output: { ratio: 1.25, samples: 1, updatedAt: 7 } });
 	});
@@ -274,7 +309,7 @@ describe("CalibrationStore", () => {
 		expect(warning).toContain("invalid JSON");
 		expect(warning).toContain(version(2));
 		expect(calibration.ratios("a/b").output).toBe(1.5);
-		calibration.update("c/d", "output", { reported: 100, estimated: 100 }, 2);
+		calibration.update([{ key: "c/d", kind: "output", sample: { reported: 100, estimated: 100 } }], 2);
 		expect(dir.files.has(version(3))).toBe(true);
 	});
 
@@ -288,7 +323,7 @@ describe("CalibrationStore", () => {
 		const calibration = new CalibrationStore(DIR, dir);
 		expect(calibration.load()).toBeUndefined();
 		expect(calibration.ratios("a/b")).toEqual({ output: undefined, thinking: undefined });
-		calibration.update("c/d", "output", { reported: 100, estimated: 100 }, 3);
+		calibration.update([{ key: "c/d", kind: "output", sample: { reported: 100, estimated: 100 } }], 3);
 		expect(JSON.parse(dir.files.get(version(3)) ?? "{}")).toMatchObject({
 			version: 2,
 			models: { "c/d": { output: { ratio: 1, samples: 1 } } },
@@ -306,7 +341,7 @@ describe("CalibrationStore", () => {
 
 	it("ignores samples below the minimum estimate", () => {
 		const dir = new MemoryDir();
-		store(dir).update("a/b", "output", { reported: 30, estimated: 20 }, 0);
+		store(dir).update([{ key: "a/b", kind: "output", sample: { reported: 30, estimated: 20 } }], 0);
 		expect(dir.publishes).toBe(0);
 	});
 
@@ -314,8 +349,9 @@ describe("CalibrationStore", () => {
 		const dir = new MemoryDir();
 		const mine = store(dir);
 		const other = store(dir);
-		dir.beforePublish = () => other.update("x/other", "output", { reported: 900, estimated: 600 }, 1);
-		mine.update("x/mine", "output", { reported: 1000, estimated: 800 }, 2);
+		dir.beforePublish = () =>
+			other.update([{ key: "x/other", kind: "output", sample: { reported: 900, estimated: 600 } }], 1);
+		mine.update([{ key: "x/mine", kind: "output", sample: { reported: 1000, estimated: 800 } }], 2);
 		const restored = store(dir);
 		expect(restored.ratios("x/other").output).toBe(1.5);
 		expect(restored.ratios("x/mine").output).toBe(1.25);
@@ -333,9 +369,12 @@ describe("CalibrationStore", () => {
 		// Inside the paused session's creation of version 2, the other session publishes versions 2 to 5 and
 		// removes versions 1 and 2, so the paused creation of version 2 succeeds on a reused number.
 		dir.beforePublish = () => {
-			for (let i = 0; i < 4; i++) other.update("p/b", "output", { reported: 100 + i, estimated: 100 }, i);
+			for (let i = 0; i < 4; i++)
+				other.update([{ key: "p/b", kind: "output", sample: { reported: 100 + i, estimated: 100 } }], i);
 		};
-		expect(paused.update("p/a", "output", { reported: 200, estimated: 100 }, 10)).toBeUndefined();
+		expect(
+			paused.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 10),
+		).toBeUndefined();
 		const restored = store(dir);
 		expect(restored.entry("p/a")).toEqual({ output: { ratio: 2, samples: 1, updatedAt: 10 } });
 		expect(restored.entry("p/b")?.output?.samples).toBe(4);
@@ -348,7 +387,10 @@ describe("CalibrationStore", () => {
 		const calibration = store(dir);
 		dir.failPublish = new Error("EIO");
 		for (let i = 0; i < count; i++) {
-			calibration.update("p/m", "output", { reported: i === 0 ? 400 : 100, estimated: 100 }, i);
+			calibration.update(
+				[{ key: "p/m", kind: "output", sample: { reported: i === 0 ? 400 : 100, estimated: 100 } }],
+				i,
+			);
 		}
 		const expected = calibration.entry("p/m")?.output;
 		expect(expected?.samples).toBe(count);
@@ -365,9 +407,12 @@ describe("CalibrationStore", () => {
 		const paused = store(dir);
 		const other = store(dir);
 		dir.afterPublish = () => {
-			for (let i = 0; i < 512; i++) other.update("p/b", "output", { reported: 100, estimated: 100 }, i);
+			for (let i = 0; i < 512; i++)
+				other.update([{ key: "p/b", kind: "output", sample: { reported: 100, estimated: 100 } }], i);
 		};
-		expect(paused.update("p/a", "output", { reported: 200, estimated: 100 }, 1)).toBeUndefined();
+		expect(
+			paused.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 1),
+		).toBeUndefined();
 		paused.flush();
 		const restored = store(dir);
 		expect(restored.entry("p/a")?.output?.samples).toBe(1);
@@ -383,7 +428,7 @@ describe("CalibrationStore", () => {
 			writers: { crashed: { seq: 3, at: now - WRITER_RETENTION_MS - 86_400_000 }, recent: { seq: 1, at: now - 1000 } },
 		});
 		dir.files.set(version(1), crashed);
-		store(dir, () => now).update("p/m", "output", { reported: 100, estimated: 100 }, 1);
+		store(dir, () => now).update([{ key: "p/m", kind: "output", sample: { reported: 100, estimated: 100 } }], 1);
 		const writers = Object.keys(JSON.parse(dir.files.get(version(2)) ?? "{}").writers);
 		expect(writers).not.toContain("crashed");
 		expect(writers).toContain("recent");
@@ -398,13 +443,13 @@ describe("CalibrationStore", () => {
 		const other = store(dir, clock);
 		dir.afterPublish = () => {
 			now += WRITER_RETENTION_MS + 86_400_000;
-			other.update("p/b", "output", { reported: 100, estimated: 100 }, 2);
+			other.update([{ key: "p/b", kind: "output", sample: { reported: 100, estimated: 100 } }], 2);
 		};
-		paused.update("p/a", "output", { reported: 200, estimated: 100 }, 1);
+		paused.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 1);
 		const restored = store(dir, clock);
 		expect(restored.entry("p/a")?.output?.samples).toBe(1);
 		expect(restored.entry("p/b")?.output?.samples).toBe(1);
-		paused.update("p/a", "output", { reported: 200, estimated: 100 }, 3);
+		paused.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 3);
 		expect(store(dir, clock).entry("p/a")?.output?.samples).toBe(2);
 	});
 
@@ -417,10 +462,11 @@ describe("CalibrationStore", () => {
 			const clock = () => now;
 			const dir = new MemoryDir();
 			const other = store(dir, clock);
-			for (let i = 0; i < 3; i++) other.update("p/m", "output", { reported: 100, estimated: 100 }, i);
+			for (let i = 0; i < 3; i++)
+				other.update([{ key: "p/m", kind: "output", sample: { reported: 100, estimated: 100 } }], i);
 			const mine = store(dir, clock);
 			fail(dir);
-			const warning = mine.update("p/m", "output", { reported: 400, estimated: 100 }, 10);
+			const warning = mine.update([{ key: "p/m", kind: "output", sample: { reported: 400, estimated: 100 } }], 10);
 			dir.failRemove = undefined;
 			const advance = (ms: number) => {
 				now += ms;
@@ -435,7 +481,7 @@ describe("CalibrationStore", () => {
 			expect(warning).toContain("EIO");
 			expect(store(dir, clock).entry("p/m")?.output).toMatchObject({ samples: 4, ratio: 1.9 });
 			advance(WRITER_RETENTION_MS + DAY);
-			other.update("p/other", "output", { reported: 100, estimated: 100 }, 20);
+			other.update([{ key: "p/other", kind: "output", sample: { reported: 100, estimated: 100 } }], 20);
 			expect(mine.flush()).toBeUndefined();
 			const restored = store(dir, clock);
 			expect(restored.entry("p/m")?.output?.samples).toBe(4);
@@ -449,7 +495,7 @@ describe("CalibrationStore", () => {
 			});
 			expect(warning).toContain("EPERM");
 			advance(WRITER_RETENTION_MS + DAY);
-			other.update("p/other", "output", { reported: 100, estimated: 100 }, 20);
+			other.update([{ key: "p/other", kind: "output", sample: { reported: 100, estimated: 100 } }], 20);
 			mine.flush();
 			expect(store(dir, clock).entry("p/m")?.output).toMatchObject({ samples: 4 });
 			expect(store(dir, clock).ratios("p/m").output).toBeCloseTo(1.9);
@@ -460,7 +506,7 @@ describe("CalibrationStore", () => {
 				dir.failRemove = new Error("EIO");
 			});
 			expect(mine.flush()).toBeUndefined();
-			mine.update("p/m", "output", { reported: 100, estimated: 100 }, 11);
+			mine.update([{ key: "p/m", kind: "output", sample: { reported: 100, estimated: 100 } }], 11);
 			const restored = store(dir, clock).entry("p/m")?.output;
 			expect(restored?.samples).toBe(5);
 			expect(restored?.ratio).toBeCloseTo(1.63);
@@ -470,7 +516,7 @@ describe("CalibrationStore", () => {
 	it("removes its own record when the session closes", () => {
 		const dir = new MemoryDir();
 		const calibration = store(dir);
-		calibration.update("p/m", "output", { reported: 100, estimated: 100 }, 1);
+		calibration.update([{ key: "p/m", kind: "output", sample: { reported: 100, estimated: 100 } }], 1);
 		const newest = () => {
 			const name = dir.list(DIR).sort().at(-1) ?? "";
 			return JSON.parse(dir.files.get(join(DIR, name)) ?? "{}");
@@ -484,9 +530,9 @@ describe("CalibrationStore", () => {
 	it("never applies a stored sample twice when it retries", () => {
 		const dir = new MemoryDir();
 		const mine = store(dir);
-		mine.update("p/a", "output", { reported: 200, estimated: 100 }, 1);
+		mine.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 1);
 		mine.flush();
-		mine.update("p/a", "output", { reported: 200, estimated: 100 }, 2);
+		mine.update([{ key: "p/a", kind: "output", sample: { reported: 200, estimated: 100 } }], 2);
 		expect(store(dir).entry("p/a")?.output?.samples).toBe(2);
 	});
 
@@ -496,11 +542,13 @@ describe("CalibrationStore", () => {
 		const mine = store(dir);
 		const other = store(dir);
 		dir.failPublish = new Error("EIO");
-		expect(mine.update("p/m", "output", { reported: 200, estimated: 100 }, 1)).toContain("EIO");
+		expect(mine.update([{ key: "p/m", kind: "output", sample: { reported: 200, estimated: 100 } }], 1)).toContain(
+			"EIO",
+		);
 		dir.failPublish = undefined;
-		other.update("p/m", "output", { reported: 300, estimated: 100 }, 2);
+		other.update([{ key: "p/m", kind: "output", sample: { reported: 300, estimated: 100 } }], 2);
 		expect(store(dir).entry("p/m")).toEqual({ output: { ratio: 1.6, samples: 2, updatedAt: 2 } });
-		mine.update("q/n", "output", { reported: 100, estimated: 100 }, 3);
+		mine.update([{ key: "q/n", kind: "output", sample: { reported: 100, estimated: 100 } }], 3);
 		const restored = store(dir);
 		expect(restored.entry("p/m")?.output?.samples).toBe(3);
 		expect(restored.ratios("p/m").output).toBeCloseTo(1.72);
@@ -511,7 +559,7 @@ describe("CalibrationStore", () => {
 		const dir = new MemoryDir();
 		const mine = store(dir);
 		dir.failPublish = new Error("EIO");
-		mine.update("a/b", "output", { reported: 200, estimated: 100 }, 1);
+		mine.update([{ key: "a/b", kind: "output", sample: { reported: 200, estimated: 100 } }], 1);
 		expect(store(dir).ratios("a/b").output).toBeUndefined();
 		dir.failPublish = undefined;
 		expect(mine.flush()).toBeUndefined();
@@ -526,7 +574,7 @@ describe("CalibrationStore", () => {
 		const warnings: (string | undefined)[] = [];
 		const ratios: number[] = [];
 		for (let i = 1; i <= 3; i++) {
-			warnings.push(calibration.update("x/m", "output", { reported: 200, estimated: 100 }, i));
+			warnings.push(calibration.update([{ key: "x/m", kind: "output", sample: { reported: 200, estimated: 100 } }], i));
 			ratios.push(calibration.ratios("x/m").output ?? 0);
 		}
 		expect(warnings.filter(Boolean)).toHaveLength(1);
@@ -541,14 +589,17 @@ describe("CalibrationStore", () => {
 		const dir = new MemoryDir();
 		const calibration = store(dir);
 		dir.publish = () => false;
-		expect(calibration.update("a/b", "output", { reported: 200, estimated: 100 }, 1)).toBeUndefined();
+		expect(
+			calibration.update([{ key: "a/b", kind: "output", sample: { reported: 200, estimated: 100 } }], 1),
+		).toBeUndefined();
 		expect(calibration.ratios("a/b").output).toBe(2);
 	});
 
 	it("keeps only the newest three versions", () => {
 		const dir = new MemoryDir();
 		const calibration = store(dir);
-		for (let i = 1; i <= 6; i++) calibration.update("a/b", "output", { reported: 100 + i, estimated: 100 }, i);
+		for (let i = 1; i <= 6; i++)
+			calibration.update([{ key: "a/b", kind: "output", sample: { reported: 100 + i, estimated: 100 } }], i);
 		expect(dir.list(DIR).sort()).toEqual(["0000000004.json", "0000000005.json", "0000000006.json"]);
 	});
 });
@@ -605,7 +656,7 @@ describe("openCalibration", () => {
 			if (outcome.kind !== "recorded") throw new Error(`expected a record, got ${outcome.kind}`);
 			const sample = outcome.calibration.output;
 			expect(sample).toBeDefined();
-			if (sample) expect(calibration.update("p/m", "output", sample, t)).toBeUndefined();
+			if (sample) expect(calibration.update([{ key: "p/m", kind: "output", sample }], t)).toBeUndefined();
 		}
 		expect(calibration.ratios("p/m")).toEqual({});
 		expect(calibration.close()).toBeUndefined();
