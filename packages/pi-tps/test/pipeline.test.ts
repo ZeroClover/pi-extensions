@@ -277,7 +277,7 @@ function runPipeline(requests: RequestScript[]) {
 		tracker.add(outcome.record);
 		for (const kind of CALIBRATION_KINDS) {
 			const sample = outcome.calibration[kind];
-			if (sample) calibration.update("p/m", kind, sample, 0);
+			if (sample) calibration.update([{ key: "p/m", kind, sample }], 0);
 		}
 		base = clock.t;
 	}

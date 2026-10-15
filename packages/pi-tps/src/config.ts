@@ -1,6 +1,7 @@
 import type { ThemeColor } from "@earendil-works/pi-coding-agent";
 import { DEFAULT_TICK_INTERVAL_MS, MAX_TICK_INTERVAL_MS, MIN_TICK_INTERVAL_MS } from "./constants.ts";
 import { errorMessage } from "./files.ts";
+import { finite, isRecord } from "./guards.ts";
 
 export const CONFIG_FILE_NAME = "pi-tps.json";
 
@@ -179,10 +180,6 @@ export function defaultConfig(): TpsConfig {
 	};
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
 const COLOR_HINT = "expected a theme colour token (e.g. success, warning, error, accent, dim) or #rgb/#rrggbb";
 
 /** Parses a threshold list. Returns undefined (after a warning) when the value is not a list at all. */
@@ -204,7 +201,7 @@ function parseThresholds(
 			return;
 		}
 		const { min, color: rawColor } = item;
-		if (typeof min !== "number" || !Number.isFinite(min)) {
+		if (!finite(min)) {
 			warn(`${itemPath}.min: expected a number; entry ignored`);
 			return;
 		}
@@ -347,6 +344,38 @@ function parseMetric(
 	return settings;
 }
 
+/** Parses one entry of `overrides`. Undefined (after a warning) when its key or value is unusable. */
+function parseOverride(
+	key: string,
+	value: unknown,
+	fallbackColor: ColorSpec,
+	warn: (message: string) => void,
+): Override | undefined {
+	const path = `overrides["${key}"]`;
+	const rule = parseOverrideKey(key);
+	if (typeof rule === "string") {
+		warn(`${path}: ${rule}; override ignored`);
+		return undefined;
+	}
+	if (!isRecord(value)) {
+		const hint = Array.isArray(value)
+			? ' (a threshold list is the old format; use { "tps": { "absolute": [...] } })'
+			: "";
+		warn(`${path}: expected { "tps"?, "ttft"? }${hint}; override ignored`);
+		return undefined;
+	}
+	const metrics: Override["metrics"] = {};
+	for (const name of Object.keys(value)) {
+		if (name !== "tps" && name !== "ttft") warn(`${path}.${name}: unknown setting ignored`);
+	}
+	for (const metric of METRICS) {
+		if (value[metric] === undefined) continue;
+		const parsed = parseMetric(value[metric], `${path}.${metric}`, fallbackColor, warn);
+		if (parsed) metrics[metric] = parsed;
+	}
+	return { ...rule, metrics };
+}
+
 /**
  * Parses the configuration file content. Every problem produces one warning and falls back to the default of
  * that field only. `text` is undefined when the file does not exist.
@@ -411,7 +440,7 @@ export function parseConfig(text: string | undefined, source: string): { config:
 				);
 			}
 			if (Array.isArray(frames) && frames.length > 0 && frames.every(isFrame)) {
-				config.animation.frames = frames.filter(isFrame);
+				config.animation.frames = [...frames];
 			} else if (frames !== undefined) {
 				warn(
 					"animation.frames: expected a non-empty array of non-empty strings without control characters; using the default spinner",
@@ -432,29 +461,8 @@ export function parseConfig(text: string | undefined, source: string): { config:
 			warn('overrides: expected an object mapping match keys to { "tps"?, "ttft"? }');
 		} else {
 			for (const [key, value] of Object.entries(overrides)) {
-				const path = `overrides["${key}"]`;
-				const rule = parseOverrideKey(key);
-				if (typeof rule === "string") {
-					warn(`${path}: ${rule}; override ignored`);
-					continue;
-				}
-				if (!isRecord(value)) {
-					const hint = Array.isArray(value)
-						? ' (a threshold list is the old format; use { "tps": { "absolute": [...] } })'
-						: "";
-					warn(`${path}: expected { "tps"?, "ttft"? }${hint}; override ignored`);
-					continue;
-				}
-				const metrics: Override["metrics"] = {};
-				for (const name of Object.keys(value)) {
-					if (name !== "tps" && name !== "ttft") warn(`${path}.${name}: unknown setting ignored`);
-				}
-				for (const metric of METRICS) {
-					if (value[metric] === undefined) continue;
-					const parsed = parseMetric(value[metric], `${path}.${metric}`, config.baseColor, warn);
-					if (parsed) metrics[metric] = parsed;
-				}
-				config.overrides.push({ ...rule, metrics });
+				const override = parseOverride(key, value, config.baseColor, warn);
+				if (override) config.overrides.push(override);
 			}
 		}
 	}

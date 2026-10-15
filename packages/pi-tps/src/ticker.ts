@@ -16,7 +16,7 @@ export class Ticker {
 	constructor(
 		private readonly schedule: ScheduleInterval,
 		private readonly intervalMs: number,
-		private readonly onTick: (frame: number) => void,
+		private readonly onTick: () => void,
 	) {}
 
 	get running(): boolean {
@@ -33,7 +33,7 @@ export class Ticker {
 		this.frame = 0;
 		this.cancel = this.schedule(() => {
 			this.frame++;
-			this.onTick(this.frame);
+			this.onTick();
 		}, this.intervalMs);
 	}
 
