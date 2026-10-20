@@ -2,6 +2,10 @@
   dir: packages/pi-retry
   intents:
     - khaki-jobs-live
+"@zeroclover/pi-rtk@0.1.0":
+  dir: packages/pi-rtk
+  intents:
+    - empty-cats-compete
 "@zeroclover/pi-tps@0.1.0":
   dir: packages/pi-tps
   intents:
