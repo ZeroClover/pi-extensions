@@ -61,7 +61,7 @@ describe("RtkController.handleToolCall", () => {
 		expect(await controller.handleToolCall("bash", bash, cwd, undefined, reporter)).toBeUndefined();
 		expect(bash.command).toBe("rtk git status");
 
-		const exec = { cmd: "git diff", workdir: "." };
+		const exec = { cmd: "git diff", workdir: ".", shell: "bash" };
 		await controller.handleToolCall("exec_command", exec, cwd, undefined, reporter);
 		expect(exec.cmd).toBe("rtk git diff");
 		expect(calls.at(-1)?.args).toEqual(["rewrite", "--", "git diff"]);
@@ -101,6 +101,24 @@ describe("RtkController.handleToolCall", () => {
 		expect(calls).toHaveLength(1);
 		expect(controller.counts.skipped).toBe(3);
 		expect(controller.counts.failed).toBe(0);
+	});
+
+	it("shows an explicit off over unavailable or suspended, and never runs rtk under RTK_DISABLED=1", async () => {
+		const unavailable = fakeRtk(
+			() => exited(1),
+			() => missing,
+		);
+		const off = await started(unavailable.run);
+		off.controller.setEnabled(false, off.reporter);
+		expect(off.statuses.at(-1)).toBe("RTK off");
+		expect(formatStatus(off.controller, new Set())).toContain("state: off (/rtk off)");
+
+		const env = await started(unavailable.run, { env: { RTK_DISABLED: "1" } });
+		expect(env.notices).toEqual([]);
+		expect(env.statuses.at(-1)).toBe("RTK off");
+		await env.controller.handleToolCall("bash", { command: "git status" }, cwd, undefined, env.reporter);
+		expect(unavailable.calls).toHaveLength(1);
+		expect(onNotice(env.controller)?.level).toBe("warning");
 	});
 
 	it("leaves commands alone when off, or when RTK_DISABLED=1", async () => {
@@ -202,6 +220,20 @@ describe("RtkController availability", () => {
 		await controller.handleToolCall("bash", input, cwd, undefined, reporter);
 		expect(input.command).toBe("rtk git status");
 		expect(statuses.at(-1)).toBeUndefined();
+	});
+
+	it("starts one recheck for parallel calls", async () => {
+		const { run, calls } = fakeRtk(
+			() => exited(1),
+			() => missing,
+		);
+		let time = 0;
+		const { controller, reporter } = await started(run, { now: () => time });
+		time = RECHECK_MS;
+		await Promise.all(
+			[1, 2, 3].map(() => controller.handleToolCall("bash", { command: "git status" }, cwd, undefined, reporter)),
+		);
+		expect(calls.filter((call) => call.args[0] === "--version")).toHaveLength(2);
 	});
 
 	it("rejects an rtk without `rewrite`", async () => {

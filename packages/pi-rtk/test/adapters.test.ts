@@ -36,7 +36,7 @@ describe("resolveTarget", () => {
 
 	it("skips PTY sessions", () => {
 		expect(resolveTarget(exec, { cmd: "ssh host", tty: true }, "/repo")).toEqual({ kind: "skip", reason: "tty" });
-		expect(resolveTarget(exec, { cmd: "git status", tty: false }, "/repo")).toMatchObject({ kind: "target" });
+		expect(resolveTarget(exec, { cmd: "git status", tty: false }, "/repo", "linux")).toMatchObject({ kind: "target" });
 	});
 
 	it("rewrites only for POSIX shells", () => {
@@ -54,6 +54,15 @@ describe("resolveTarget", () => {
 			reason: "non-posix-shell",
 		});
 		expect(resolveTarget(exec, { cmd: "git status", shell: "" }, "/repo", "darwin")).toMatchObject({ kind: "target" });
+		expect(resolveTarget(exec, { cmd: "git status", shell: true }, "/repo", "darwin")).toMatchObject({
+			kind: "target",
+		});
+		for (const shell of [123, ["pwsh", "-c"], null]) {
+			expect(resolveTarget(exec, { cmd: "git status", shell }, "/repo", "darwin")).toEqual({
+				kind: "skip",
+				reason: "non-posix-shell",
+			});
+		}
 	});
 
 	it("skips an omitted shell on Windows, where the tool's default may be PowerShell", () => {
@@ -66,8 +75,10 @@ describe("resolveTarget", () => {
 	});
 
 	it("resolves the working directory field against the session cwd", () => {
-		expect(resolveTarget(exec, { cmd: "ls", workdir: "packages" }, "/repo")).toMatchObject({ cwd: "/repo/packages" });
-		expect(resolveTarget(exec, { cmd: "ls", workdir: "/tmp" }, "/repo")).toMatchObject({ cwd: "/tmp" });
-		expect(resolveTarget(exec, { cmd: "ls", workdir: 7 }, "/repo")).toMatchObject({ cwd: "/repo" });
+		expect(resolveTarget(exec, { cmd: "ls", workdir: "packages" }, "/repo", "linux")).toMatchObject({
+			cwd: "/repo/packages",
+		});
+		expect(resolveTarget(exec, { cmd: "ls", workdir: "/tmp" }, "/repo", "linux")).toMatchObject({ cwd: "/tmp" });
+		expect(resolveTarget(exec, { cmd: "ls", workdir: 7 }, "/repo", "linux")).toMatchObject({ cwd: "/repo" });
 	});
 });

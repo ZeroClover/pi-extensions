@@ -30,7 +30,7 @@ Requires `rtk` 0.23.0 or newer on `PATH`. Without it, pi-rtk warns once and comm
 | event | `tool_call` | Rewrites the command of every tool that has an adapter, whether the model or a codemode script calls it. |
 | command | `/rtk` | Shows the state, the rtk version, every adapter (marked `[not registered]` when no such tool is loaded), the session counts of rewritten, unchanged, skipped, blocked, and failed calls, and the last failure. |
 | command | `/rtk off` / `/rtk on` | Stops or resumes rewriting for this session. `on` also ends a suspension and checks rtk again. Every new session starts on. |
-| status | `rtk` | `RTK unavailable`, `RTK suspended`, or `RTK off` while commands are not being rewritten; empty otherwise. |
+| status | `rtk` | `RTK off` (`/rtk off` or `RTK_DISABLED=1`), else `RTK unavailable`, else `RTK suspended` while commands are not being rewritten; empty otherwise. |
 
 Any other argument to `/rtk` prints the usage.
 
@@ -40,7 +40,7 @@ Any other argument to `/rtk` prints the usage.
 2. Skip rules leave the command unchanged without running rtk. They apply when:
    - the command is blank or already starts with `rtk`;
    - the call asks for a PTY (`tty: true`), because RTK filters output, which breaks interactive programs;
-   - the `shell` is not bash, sh, zsh, dash, or ksh (for example `pwsh`, `cmd`, `fish`, `nu`), or is `false`;
+   - the `shell` is not bash, sh, zsh, dash, or ksh (for example `pwsh`, `cmd`, `fish`, `nu`), is `false`, or is another non-string value (`true` means the tool's default shell, like an omitted one);
    - on Windows, the tool has a shell field but the call names no shell, because the tool's default there can be PowerShell (pi-unified-exec without Git Bash);
    - the working directory does not exist.
 3. `rtk rewrite <command>` runs without a shell, in the call's working directory, with a 2 s timeout. The command is passed as a single argument after `--`, so one that starts with `-` is never taken for an rtk option.
@@ -57,7 +57,7 @@ A cancelled call (Escape) stops rtk and is not counted as a failure.
 
 ## When rtk is missing or failing
 
-- At session start pi-rtk runs `rtk --version`. If rtk is missing, too old, or fails, it warns once, shows `RTK unavailable`, and runs commands unchanged at no cost. The next call with an adapter, 30 s or more after the last check, checks again, so installing rtk during a session is picked up without `/rtk on`.
+- At session start pi-rtk runs `rtk --version` (unless `RTK_DISABLED=1`). If rtk is missing, too old, or fails, it warns once, shows `RTK unavailable`, and runs commands unchanged at no cost. The next call with an adapter, 30 s or more after the last check, checks again, so installing rtk during a session is picked up without `/rtk on`.
 - Three consecutive failures suspend rewriting for the session. pi-rtk warns once with the last failure and shows `RTK suspended`. This keeps a hung rtk from adding 2 s to every command. Any normal answer from rtk resets the count. `/rtk on` or a new session ends the suspension.
 - An internal error in pi-rtk never blocks a command. The command runs unchanged and a warning is shown.
 
@@ -91,7 +91,7 @@ The `tools` object adds an adapter for another tool, replaces a built-in one, or
 
 `bg_run` is the tool of pi-background-tasks and `bash_bg` the tool of pi-bg-shell; both run `command` through a POSIX shell without a PTY. Use `"bash": false` when your `bash` tool is not a POSIX shell (for example @code-fixer-23/pi-bash-tooljack-nu, which runs Nushell). Do not add tools that send keystrokes to a running process (`write_stdin`, `terminal_send`), tools whose every call runs in a PTY (pi-smart-terminal's `terminal_exec`), or tools that run commands remotely: an adapter cannot mark them, so their commands would be rewritten. Each problem produces one warning at session start. An entry with an unknown key or an invalid field is ignored as a whole, so a typo can never drop the shell or PTY guard of a built-in adapter. Invalid JSON means the built-in adapters.
 
-`RTK_DISABLED=1` in Pi's environment turns rewriting off; this is RTK's own switch. `/rtk` then reports `off (RTK_DISABLED=1)`.
+`RTK_DISABLED=1` in Pi's environment turns rewriting off; this is RTK's own switch. pi-rtk then never runs rtk, not even `rtk --version`, and `/rtk` reports `off (RTK_DISABLED=1)`.
 
 ## Not covered
 

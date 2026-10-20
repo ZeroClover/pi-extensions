@@ -20,13 +20,13 @@ export function parseRtkArgs(args: string): RtkAction {
 
 /** What `/rtk on` reports after the restart; undefined when the availability check has already warned. */
 export function onNotice(controller: RtkController): { message: string; level: "info" | "warning" } | undefined {
-	if (!controller.availability.ok) return undefined;
 	if (controller.disabledByEnv) {
 		return {
 			message: "pi-rtk: on for this session, but RTK_DISABLED=1 in Pi's environment keeps rewriting off",
 			level: "warning",
 		};
 	}
+	if (!controller.availability.ok) return undefined;
 	return { message: "pi-rtk: on for this session", level: "info" };
 }
 
@@ -42,10 +42,10 @@ function describeAdapter(name: string, adapter: ToolAdapter, registered: Readonl
 export function formatStatus(controller: RtkController, registered: ReadonlySet<string>): string {
 	const { availability, counts } = controller;
 	let state = "on";
-	if (!availability.ok) state = "unavailable";
-	else if (controller.disabledByEnv) state = "off (RTK_DISABLED=1)";
-	else if (controller.suspended !== undefined) state = `suspended: ${controller.suspended}`;
+	if (controller.disabledByEnv) state = "off (RTK_DISABLED=1)";
 	else if (!controller.enabled) state = "off (/rtk off)";
+	else if (!availability.ok) state = "unavailable";
+	else if (controller.suspended !== undefined) state = `suspended: ${controller.suspended}`;
 	const adapters = [...controller.adapters].map(([name, adapter]) => describeAdapter(name, adapter, registered));
 	const lines = [
 		`state: ${state}`,

@@ -45,7 +45,7 @@ The extension SHALL interpret `rtk rewrite` as follows: exit 0 or 3 with output 
 - **THEN** the command becomes the two lines without the trailing newline
 
 ### Requirement: Fail open
-Every problem other than an RTK deny SHALL leave the command unchanged and let the tool run: RTK timing out (2 seconds), being killed, failing to start, exiting with another code, or an internal error in the extension. The `tool_call` handler SHALL never throw.
+Every problem other than an RTK deny SHALL leave the command unchanged and let the tool run: RTK timing out (2 seconds), being killed, failing to start (including arguments the process API refuses, such as a NUL byte), exiting with another code, or an internal error in the extension. The `tool_call` handler SHALL never throw.
 
 #### Scenario: RTK hangs
 - **WHEN** `rtk rewrite` does not finish within 2 seconds

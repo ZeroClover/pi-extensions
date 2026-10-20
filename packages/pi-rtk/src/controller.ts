@@ -101,6 +101,11 @@ export class RtkController {
 		this.suspended = undefined;
 		this.lastFailure = undefined;
 		this.consecutiveFailures = 0;
+		// RTK's own switch is fixed for the process: nothing will run rtk, so there is nothing to check or warn about.
+		if (this.disabledByEnv) {
+			reporter.setStatus(this.statusText());
+			return;
+		}
 		await this.check(reporter, true);
 	}
 
@@ -111,16 +116,17 @@ export class RtkController {
 
 	/** Footer text while commands are not being rewritten; undefined while RTK is active. */
 	statusText(): string | undefined {
+		if (!this.enabled || this.disabledByEnv) return "RTK off";
 		if (!this.availability.ok) return "RTK unavailable";
 		if (this.suspended !== undefined) return "RTK suspended";
-		if (!this.enabled || this.disabledByEnv) return "RTK off";
 		return undefined;
 	}
 
 	private async check(reporter: Reporter, announce: boolean): Promise<void> {
 		const wasOk = this.availability.ok;
-		this.availability = await this.probe();
+		// Set before the probe so that parallel tool calls do not each start a recheck.
 		this.checkedAt = this.now();
+		this.availability = await this.probe();
 		if (!this.availability.ok && (announce || wasOk)) {
 			reporter.notify(`pi-rtk: commands run unchanged: ${this.availability.reason}`, "warning");
 		}

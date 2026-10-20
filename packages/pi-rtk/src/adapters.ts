@@ -48,6 +48,9 @@ export function resolveTarget(
 		const shell = input[adapter.shellField];
 		// `shell: false` means the tool runs the command without a shell, where RTK's rewrites do not parse.
 		if (shell === false) return { kind: "skip", reason: "non-posix-shell" };
+		// `true` asks for the tool's default shell, like an omitted field; any other non-string value is unknown.
+		if (shell !== undefined && shell !== true && typeof shell !== "string")
+			return { kind: "skip", reason: "non-posix-shell" };
 		if (typeof shell === "string" && shell.trim() !== "") {
 			if (!POSIX_SHELLS.has(shellName(shell.trim()))) return { kind: "skip", reason: "non-posix-shell" };
 		} else if (platform === "win32") {

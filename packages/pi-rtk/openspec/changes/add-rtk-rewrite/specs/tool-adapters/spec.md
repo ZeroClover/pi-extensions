@@ -18,7 +18,7 @@ The extension SHALL rewrite the `command` field of `bash`, and the `cmd` field o
 - **THEN** its input is unchanged and RTK is not run
 
 ### Requirement: Skip rules
-A call SHALL NOT be sent to RTK when its command is missing, blank, or already starts with `rtk`; when its PTY field is `true`; when its shell field is `false` or names a shell other than bash, sh, zsh, dash, or ksh (compared by basename, case-insensitively, ignoring `.exe`); or, on Windows, when the adapter has a shell field and the call names no shell.
+A call SHALL NOT be sent to RTK when its command is missing, blank, or already starts with `rtk`; when its PTY field is `true`; when its shell field is `false`, another non-string value other than `true` (which, like an omitted field, means the tool's default shell), or names a shell other than bash, sh, zsh, dash, or ksh (compared by basename, case-insensitively, ignoring `.exe`); or, on Windows, when the adapter has a shell field and the call names no shell.
 
 #### Scenario: PTY session
 - **WHEN** `exec_command` is called with `cmd: "ssh host"` and `tty: true`

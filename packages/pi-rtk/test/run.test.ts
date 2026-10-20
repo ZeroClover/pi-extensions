@@ -32,6 +32,12 @@ describe("runFile", () => {
 		expect(run.error).toMatch(/ENOENT/);
 	});
 
+	it("reports arguments execFile refuses instead of rejecting", async () => {
+		const run = await runFile(node, ["-e", "", "echo \0"], { timeoutMs: 5000 });
+		expect(run.code).toBeNull();
+		expect(run.error).toMatch(/null bytes|ERR_INVALID_ARG_VALUE/);
+	});
+
 	it("kills and reports a process that exceeds the timeout", async () => {
 		const run = await runFile(node, ["-e", "setTimeout(() => {}, 60000)"], { timeoutMs: 200 });
 		expect(run.timedOut).toBe(true);
