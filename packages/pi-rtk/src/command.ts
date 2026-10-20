@@ -49,7 +49,7 @@ export function formatStatus(controller: RtkController, registered: ReadonlySet<
 	const adapters = [...controller.adapters].map(([name, adapter]) => describeAdapter(name, adapter, registered));
 	const lines = [
 		`state: ${state}`,
-		`rtk: ${availability.ok ? availability.version : availability.reason}`,
+		`rtk: ${availability.ok ? availability.version : controller.disabledByEnv ? "not checked (RTK_DISABLED=1)" : availability.reason}`,
 		`tools: ${adapters.length === 0 ? "none" : adapters.join("; ")}`,
 		`this session: ${counts.rewritten} rewritten, ${counts.unchanged} unchanged, ${counts.skipped} skipped, ${counts.blocked} blocked, ${counts.failed} failed`,
 	];

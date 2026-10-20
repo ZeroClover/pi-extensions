@@ -30,6 +30,6 @@ None.
 ## Impact
 
 - New workspace package; no other package changes. Root `README.md` gains a row.
-- Runtime dependency: the `rtk` binary (0.23.0 or newer) on `PATH`; without it the extension leaves commands unchanged.
+- Runtime dependency: the `rtk` binary (0.25.0 or newer) on `PATH`; without it the extension leaves commands unchanged.
 - Users of the `rtk init --agent pi` hook should remove `~/.pi/agent/extensions/rtk.ts`; running both is harmless (commands already starting with `rtk` are skipped) but redundant.
 - Out of scope: the user's own `!` / `!!` commands (`user_bash`), output compaction beyond what rtk does, and stdin-continuation tools such as `write_stdin`.

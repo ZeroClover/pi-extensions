@@ -15,8 +15,8 @@ export const TIMEOUT_MS = 2000;
 export const MAX_CONSECUTIVE_FAILURES = 3;
 /** How long an unavailable rtk is trusted before the next tool call checks again. */
 export const RECHECK_MS = 30_000;
-/** `rtk rewrite` first shipped in 0.23.0. */
-const MIN_VERSION: readonly [number, number, number] = [0, 23, 0];
+/** `rtk rewrite` first shipped in 0.25.0 (rtk CHANGELOG, #241). */
+const MIN_VERSION: readonly [number, number, number] = [0, 25, 0];
 
 export type Availability = { ok: true; version: string } | { ok: false; reason: string };
 

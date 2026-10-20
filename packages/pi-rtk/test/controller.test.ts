@@ -119,6 +119,7 @@ describe("RtkController.handleToolCall", () => {
 		await env.controller.handleToolCall("bash", { command: "git status" }, cwd, undefined, env.reporter);
 		expect(unavailable.calls).toHaveLength(1);
 		expect(onNotice(env.controller)?.level).toBe("warning");
+		expect(formatStatus(env.controller, new Set())).toContain("rtk: not checked (RTK_DISABLED=1)");
 	});
 
 	it("leaves commands alone when off, or when RTK_DISABLED=1", async () => {
@@ -239,19 +240,19 @@ describe("RtkController availability", () => {
 	it("rejects an rtk without `rewrite`", async () => {
 		const { run } = fakeRtk(
 			() => exited(1),
-			() => exited(0, "rtk 0.22.9\n"),
+			() => exited(0, "rtk 0.24.9\n"),
 		);
 		const { controller } = await started(run);
-		expect(controller.availability).toEqual({ ok: false, reason: "rtk 0.22.9 is too old (need 0.23.0 or newer)" });
+		expect(controller.availability).toEqual({ ok: false, reason: "rtk 0.24.9 is too old (need 0.25.0 or newer)" });
 	});
 });
 
 describe("checkVersion", () => {
-	it("accepts 0.23.0 and newer", () => {
-		expect(checkVersion("rtk 0.23.0")).toEqual({ ok: true, version: "0.23.0" });
+	it("accepts 0.25.0 and newer", () => {
+		expect(checkVersion("rtk 0.25.0")).toEqual({ ok: true, version: "0.25.0" });
 		expect(checkVersion("rtk 1.0.1\n")).toEqual({ ok: true, version: "1.0.1" });
 		expect(checkVersion("rtk 0.100.0")).toEqual({ ok: true, version: "0.100.0" });
-		expect(checkVersion("rtk 0.22.99").ok).toBe(false);
+		expect(checkVersion("rtk 0.24.99").ok).toBe(false);
 		expect(checkVersion("rtk dev")).toEqual({ ok: true, version: "rtk dev" });
 	});
 });

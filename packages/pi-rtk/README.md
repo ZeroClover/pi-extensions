@@ -19,7 +19,7 @@ pi -e ./packages/pi-rtk                       # try a repository checkout for on
 pi install /absolute/path/to/packages/pi-rtk  # install a repository checkout for the user
 ```
 
-Requires `rtk` 0.23.0 or newer on `PATH`. Without it, pi-rtk warns once and commands run unchanged.
+Requires `rtk` 0.25.0 or newer on `PATH`. Without it, pi-rtk warns once and commands run unchanged.
 
 **Coming from `rtk init --agent pi`:** remove `~/.pi/agent/extensions/rtk.ts`, or run `rtk init -g --agent pi --uninstall`. Keeping both does no harm, because pi-rtk skips commands that already start with `rtk`, but the old hook only sees `bash`. The model-facing RTK instructions (`RTK.md`) from `rtk init` are separate, and pi-rtk does not change them.
 
