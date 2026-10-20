@@ -9,6 +9,7 @@ Everything here is written by AI coding agents. The rules they follow live in [`
 | Package | npm | Description |
 |---|---|---|
 | [`pi-retry`](packages/pi-retry/) | `@zeroclover/pi-retry` | Automatic retry for failed model requests: classifies provider errors (rate limit, overload, timeout, transport, quota, auth, invalid request, …), stops on deterministic failures, honours provider-requested waits from headers, diagnostics and error text up to a configurable limit, and backs off exponentially otherwise; the failed attempt is hidden from the model; `/retry` shows the state, cancels a wait, or turns retries off for the session |
+| [`pi-rtk`](packages/pi-rtk/) | `@zeroclover/pi-rtk` | Routes shell commands through RTK for compact, token-efficient output: rewrites Pi's `bash` and pi-unified-exec's `exec_command` (codemode calls included) with `rtk rewrite`, adds other exec tools through a config file, blocks commands RTK denies, never rewrites PTY sessions or non-POSIX shells, leaves commands unchanged when rtk is missing or failing and suspends a broken rtk; `/rtk` shows the state or turns rewriting off for the session |
 | [`pi-tps`](packages/pi-tps/) | `@zeroclover/pi-tps` | Tokens-per-second readout in the footer: live TPS and TTFT (thinking included) beside the serving model's smoothed averages, coloured relative to them or by absolute thresholds; per-model averages and session totals (runs, requests, tokens, cache share, thinking, cost) when idle; burst detection; calibrated estimates for output and thinking; `/tps` shows or hides it |
 
 ## Layout
