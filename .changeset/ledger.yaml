@@ -1,3 +1,7 @@
+"@zeroclover/pi-retry@0.1.0":
+  dir: packages/pi-retry
+  intents:
+    - khaki-jobs-live
 "@zeroclover/pi-tps@0.1.0":
   dir: packages/pi-tps
   intents:
