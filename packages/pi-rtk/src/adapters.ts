@@ -34,7 +34,12 @@ function shellName(shell: string): string {
 }
 
 /** Decides from a tool call's input whether its command may go through `rtk rewrite`, and in which directory. */
-export function resolveTarget(adapter: ToolAdapter, input: Record<string, unknown>, sessionCwd: string): Target {
+export function resolveTarget(
+	adapter: ToolAdapter,
+	input: Record<string, unknown>,
+	sessionCwd: string,
+	platform: NodeJS.Platform = process.platform,
+): Target {
 	const command = input[adapter.commandField];
 	if (typeof command !== "string" || command.trim() === "") return { kind: "skip", reason: "no-command" };
 	if (/^\s*rtk(\s|$)/.test(command)) return { kind: "skip", reason: "already-rtk" };
@@ -43,7 +48,10 @@ export function resolveTarget(adapter: ToolAdapter, input: Record<string, unknow
 		const shell = input[adapter.shellField];
 		// `shell: false` means the tool runs the command without a shell, where RTK's rewrites do not parse.
 		if (shell === false) return { kind: "skip", reason: "non-posix-shell" };
-		if (typeof shell === "string" && shell.trim() !== "" && !POSIX_SHELLS.has(shellName(shell.trim()))) {
+		if (typeof shell === "string" && shell.trim() !== "") {
+			if (!POSIX_SHELLS.has(shellName(shell.trim()))) return { kind: "skip", reason: "non-posix-shell" };
+		} else if (platform === "win32") {
+			// Exec tools choose their own default shell on Windows, which can be PowerShell (pi-unified-exec without Git Bash).
 			return { kind: "skip", reason: "non-posix-shell" };
 		}
 	}

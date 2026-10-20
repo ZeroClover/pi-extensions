@@ -18,7 +18,7 @@ The extension SHALL rewrite the `command` field of `bash`, and the `cmd` field o
 - **THEN** its input is unchanged and RTK is not run
 
 ### Requirement: Skip rules
-A call SHALL NOT be sent to RTK when its command is missing, blank, or already starts with `rtk`; when its PTY field is `true`; or when its shell field is `false` or names a shell other than bash, sh, zsh, dash, or ksh (compared by basename, case-insensitively, ignoring `.exe`).
+A call SHALL NOT be sent to RTK when its command is missing, blank, or already starts with `rtk`; when its PTY field is `true`; when its shell field is `false` or names a shell other than bash, sh, zsh, dash, or ksh (compared by basename, case-insensitively, ignoring `.exe`); or, on Windows, when the adapter has a shell field and the call names no shell.
 
 #### Scenario: PTY session
 - **WHEN** `exec_command` is called with `cmd: "ssh host"` and `tty: true`
@@ -26,6 +26,10 @@ A call SHALL NOT be sent to RTK when its command is missing, blank, or already s
 
 #### Scenario: Non-POSIX shell
 - **WHEN** `exec_command` is called with `shell: "pwsh"` or `shell: "C:\\Windows\\System32\\cmd.exe"`
+- **THEN** the command is not rewritten
+
+#### Scenario: Default shell on Windows
+- **WHEN** on Windows `exec_command` is called without `shell`, where pi-unified-exec may fall back to PowerShell
 - **THEN** the command is not rewritten
 
 #### Scenario: POSIX shell path
@@ -48,7 +52,7 @@ RTK SHALL run in the session's working directory, or in the tool's working-direc
 - **THEN** the command is not rewritten and the failure count is unchanged
 
 ### Requirement: Configured adapters
-At session start the extension SHALL read `<agent-dir>/pi-rtk.json`. Its `tools` object maps a tool name to an adapter (`commandField` required; `shellField`, `ttyField`, `cwdField` optional) that adds or replaces that tool's adapter, or to `false`, which removes it. Each invalid entry or unknown key SHALL produce one warning and leave that entry at its built-in state; a missing file means the built-in adapters.
+At session start the extension SHALL read `<agent-dir>/pi-rtk.json`. Its `tools` object maps a tool name to an adapter (`commandField` required; `shellField`, `ttyField`, `cwdField` optional) that adds or replaces that tool's adapter, or to `false`, which removes it. Each problem SHALL produce one warning; an entry with an invalid field or an unknown key SHALL be ignored as a whole, leaving that tool at its built-in state. A missing file means the built-in adapters.
 
 #### Scenario: Add a background-task tool
 - **WHEN** the file contains `{"tools": {"bg_run": {"commandField": "command"}}}`
@@ -61,3 +65,7 @@ At session start the extension SHALL read `<agent-dir>/pi-rtk.json`. Its `tools`
 #### Scenario: Invalid entry
 - **WHEN** an entry lacks `commandField`
 - **THEN** a warning names the entry and the other entries still apply
+
+#### Scenario: Invalid optional field
+- **WHEN** the entry `exec_command` sets `ttyField` to a number
+- **THEN** the whole entry is ignored and the built-in `exec_command` adapter, PTY guard included, still applies

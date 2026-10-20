@@ -27,6 +27,10 @@ When `RTK_DISABLED=1` is set in Pi's environment, the extension SHALL leave ever
 - **WHEN** Pi runs with `RTK_DISABLED=1`
 - **THEN** no command is rewritten and `/rtk` reports `off (RTK_DISABLED=1)`
 
+#### Scenario: `/rtk on` under the environment switch
+- **WHEN** Pi runs with `RTK_DISABLED=1` and the user runs `/rtk on`
+- **THEN** a warning says that `RTK_DISABLED=1` keeps rewriting off, and commands stay unchanged
+
 ### Requirement: Footer status
 The footer status `rtk` SHALL show `RTK unavailable`, `RTK suspended`, or `RTK off` while commands are not being rewritten for that reason, and SHALL be empty while rewriting is active.
 

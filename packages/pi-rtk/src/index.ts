@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { type ExtensionAPI, type ExtensionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { formatStatus, parseRtkArgs, RTK_USAGE } from "./command.ts";
+import { formatStatus, onNotice, parseRtkArgs, RTK_USAGE } from "./command.ts";
 import { CONFIG_FILE_NAME, loadConfig } from "./config.ts";
 import { type Reporter, RtkController, STATUS_KEY } from "./controller.ts";
 import { runFile } from "./run.ts";
@@ -47,11 +47,13 @@ export default function (pi: ExtensionAPI): void {
 					reporter.notify(formatStatus(controller, registered), "info");
 					return;
 				}
-				case "on":
+				case "on": {
 					controller.setEnabled(true, reporter);
 					await controller.restart(reporter);
-					if (controller.availability.ok) reporter.notify("pi-rtk: on for this session", "info");
+					const notice = onNotice(controller);
+					if (notice) reporter.notify(notice.message, notice.level);
 					return;
+				}
 				case "off":
 					controller.setEnabled(false, reporter);
 					reporter.notify("pi-rtk: off for this session", "info");

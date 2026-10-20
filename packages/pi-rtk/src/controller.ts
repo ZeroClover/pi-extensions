@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { resolveTarget, type ToolAdapter } from "./adapters.ts";
-import { interpretRewrite, runFailure } from "./outcome.ts";
+import { firstLine, interpretRewrite, runFailure } from "./outcome.ts";
 import type { Run } from "./run.ts";
 
 export interface Reporter {
@@ -30,10 +30,6 @@ export interface Counts {
 
 function emptyCounts(): Counts {
 	return { rewritten: 0, unchanged: 0, skipped: 0, blocked: 0, failed: 0 };
-}
-
-function firstLine(text: string): string {
-	return text.trim().split("\n", 1)[0] ?? "";
 }
 
 /** Reads `rtk X.Y.Z` and checks it against the minimum; output without a version is accepted as is. */
@@ -167,7 +163,8 @@ export class RtkController {
 			return undefined;
 		}
 
-		const run = await this.run(RTK_BIN, ["rewrite", target.command], {
+		// `--` keeps a command such as `-h` from being parsed as an rtk option, whose help text would become the rewrite.
+		const run = await this.run(RTK_BIN, ["rewrite", "--", target.command], {
 			cwd: target.cwd,
 			timeoutMs: TIMEOUT_MS,
 			...(signal ? { signal } : {}),

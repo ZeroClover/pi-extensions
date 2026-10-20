@@ -18,6 +18,18 @@ export function parseRtkArgs(args: string): RtkAction {
 	}
 }
 
+/** What `/rtk on` reports after the restart; undefined when the availability check has already warned. */
+export function onNotice(controller: RtkController): { message: string; level: "info" | "warning" } | undefined {
+	if (!controller.availability.ok) return undefined;
+	if (controller.disabledByEnv) {
+		return {
+			message: "pi-rtk: on for this session, but RTK_DISABLED=1 in Pi's environment keeps rewriting off",
+			level: "warning",
+		};
+	}
+	return { message: "pi-rtk: on for this session", level: "info" };
+}
+
 function describeAdapter(name: string, adapter: ToolAdapter, registered: ReadonlySet<string>): string {
 	const fields = [`command: ${adapter.commandField}`];
 	if (adapter.shellField !== undefined) fields.push(`shell: ${adapter.shellField}`);

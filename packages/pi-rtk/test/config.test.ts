@@ -29,7 +29,7 @@ describe("parseConfig", () => {
 		expect(adapters.get("exec_command")).toEqual({ commandField: "command", shellField: "shell" });
 	});
 
-	it("warns once per problem and keeps the built-in state of the affected entry", () => {
+	it("warns once per problem and ignores the whole entry, keeping its built-in state", () => {
 		const { adapters, warnings } = parseConfig(
 			JSON.stringify({
 				mode: "fast",
@@ -38,6 +38,7 @@ describe("parseConfig", () => {
 					b: { commandField: "", extra: 1 },
 					c: "command",
 					exec_command: { commandField: 3 },
+					bash: { commandField: "cmd", ttyField: 42 },
 				},
 			}),
 			"f",
@@ -45,13 +46,12 @@ describe("parseConfig", () => {
 		expect(adapters).toEqual(builtins);
 		expect(warnings).toEqual([
 			"pi-rtk: f: mode: unknown setting ignored",
-			"pi-rtk: f: tools.a: commandField is required; tool ignored",
-			"pi-rtk: f: tools.b.extra: unknown setting ignored",
-			"pi-rtk: f: tools.b.commandField: expected a non-empty input field name; ignored",
-			"pi-rtk: f: tools.b: commandField is required; tool ignored",
+			"pi-rtk: f: tools.a: commandField is required; entry ignored",
+			"pi-rtk: f: tools.b.extra: unknown setting; entry ignored",
+			"pi-rtk: f: tools.b.commandField: expected a non-empty input field name; entry ignored",
 			"pi-rtk: f: tools.c: expected an adapter object or false; ignored",
-			"pi-rtk: f: tools.exec_command.commandField: expected a non-empty input field name; ignored",
-			"pi-rtk: f: tools.exec_command: commandField is required; tool ignored",
+			"pi-rtk: f: tools.exec_command.commandField: expected a non-empty input field name; entry ignored",
+			"pi-rtk: f: tools.bash.ttyField: expected a non-empty input field name; entry ignored",
 		]);
 	});
 

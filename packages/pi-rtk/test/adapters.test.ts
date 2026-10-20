@@ -53,7 +53,16 @@ describe("resolveTarget", () => {
 			kind: "skip",
 			reason: "non-posix-shell",
 		});
-		expect(resolveTarget(exec, { cmd: "git status", shell: "" }, "/repo")).toMatchObject({ kind: "target" });
+		expect(resolveTarget(exec, { cmd: "git status", shell: "" }, "/repo", "darwin")).toMatchObject({ kind: "target" });
+	});
+
+	it("skips an omitted shell on Windows, where the tool's default may be PowerShell", () => {
+		for (const input of [{ cmd: "ls -Name" }, { cmd: "ls -Name", shell: " " }]) {
+			expect(resolveTarget(exec, input, "C:\\repo", "win32")).toEqual({ kind: "skip", reason: "non-posix-shell" });
+		}
+		expect(resolveTarget(exec, { cmd: "ls", shell: "bash" }, "C:\\repo", "win32")).toMatchObject({ kind: "target" });
+		expect(resolveTarget(exec, { cmd: "ls" }, "/repo", "linux")).toMatchObject({ kind: "target" });
+		expect(resolveTarget(bash, { command: "ls" }, "C:\\repo", "win32")).toMatchObject({ kind: "target" });
 	});
 
 	it("resolves the working directory field against the session cwd", () => {

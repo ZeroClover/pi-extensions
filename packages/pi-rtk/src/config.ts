@@ -18,22 +18,30 @@ function parseAdapter(
 	path: string,
 	warn: (message: string) => void,
 ): ToolAdapter | undefined {
+	// All or nothing: a partly valid adapter could lose its shell or PTY guard and rewrite what it must not.
+	let valid = true;
 	for (const key of Object.keys(value)) {
-		if (!(ADAPTER_KEYS as readonly string[]).includes(key)) warn(`${path}.${key}: unknown setting ignored`);
+		if ((ADAPTER_KEYS as readonly string[]).includes(key)) continue;
+		warn(`${path}.${key}: unknown setting; entry ignored`);
+		valid = false;
 	}
 	const fields: Partial<Record<(typeof ADAPTER_KEYS)[number], string>> = {};
 	for (const key of ADAPTER_KEYS) {
 		const field = value[key];
 		if (field === undefined) continue;
-		if (typeof field === "string" && field !== "") fields[key] = field;
-		else warn(`${path}.${key}: expected a non-empty input field name; ignored`);
+		if (typeof field === "string" && field !== "") {
+			fields[key] = field;
+		} else {
+			warn(`${path}.${key}: expected a non-empty input field name; entry ignored`);
+			valid = false;
+		}
 	}
 	const { commandField, ...rest } = fields;
-	if (commandField === undefined) {
-		warn(`${path}: commandField is required; tool ignored`);
-		return undefined;
+	if (!("commandField" in value)) {
+		warn(`${path}: commandField is required; entry ignored`);
+		valid = false;
 	}
-	return { commandField, ...rest };
+	return valid && commandField !== undefined ? { commandField, ...rest } : undefined;
 }
 
 /**

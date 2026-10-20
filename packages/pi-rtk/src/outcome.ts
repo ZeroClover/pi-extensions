@@ -18,7 +18,7 @@ export type RewriteOutcome =
 	| { kind: "block"; reason: string }
 	| { kind: "failure"; reason: string };
 
-function firstLine(text: string): string {
+export function firstLine(text: string): string {
 	return text.trim().split("\n", 1)[0] ?? "";
 }
 

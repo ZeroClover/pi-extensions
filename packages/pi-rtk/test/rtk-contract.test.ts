@@ -8,7 +8,7 @@ import { runFile } from "../src/run.ts";
 const hasRtk = spawnSync(RTK_BIN, ["--version"]).status === 0;
 
 async function rewrite(command: string) {
-	return interpretRewrite(command, await runFile(RTK_BIN, ["rewrite", command], { timeoutMs: TIMEOUT_MS }));
+	return interpretRewrite(command, await runFile(RTK_BIN, ["rewrite", "--", command], { timeoutMs: TIMEOUT_MS }));
 }
 
 describe.skipIf(!hasRtk)("rtk rewrite contract", () => {
@@ -19,5 +19,10 @@ describe.skipIf(!hasRtk)("rtk rewrite contract", () => {
 	it("leaves unsupported and already rewritten commands unchanged", async () => {
 		expect(await rewrite("vim notes.txt")).toEqual({ kind: "unchanged" });
 		expect(await rewrite("rtk git status")).toEqual({ kind: "unchanged" });
+	});
+
+	it("does not read a command that looks like an option as an rtk option", async () => {
+		expect(await rewrite("-h")).toEqual({ kind: "unchanged" });
+		expect(await rewrite("--help")).toEqual({ kind: "unchanged" });
 	});
 });

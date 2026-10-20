@@ -7,7 +7,7 @@ Sends the shell command of a tool call through `rtk rewrite` before the tool run
 ## ADDED Requirements
 
 ### Requirement: Rewrite before execution
-Before a tool with an adapter runs, the extension SHALL pass its command to `rtk rewrite` as a single argument, without a shell, in the call's working directory, and SHALL replace the command field with RTK's rewrite when RTK provides one. This SHALL apply equally to calls made by the model and to calls made from other tools, such as codemode scripts.
+Before a tool with an adapter runs, the extension SHALL pass its command to `rtk rewrite` as a single argument after `--`, without a shell, in the call's working directory, and SHALL replace the command field with RTK's rewrite when RTK provides one. This SHALL apply equally to calls made by the model and to calls made from other tools, such as codemode scripts.
 
 #### Scenario: Direct bash call
 - **WHEN** the model calls `bash` with `command: "git status"` and RTK prints `rtk git status` with exit code 3
@@ -20,6 +20,10 @@ Before a tool with an adapter runs, the extension SHALL pass its command to `rtk
 #### Scenario: Command with shell metacharacters
 - **WHEN** the command is `git commit -m "a && b"`
 - **THEN** RTK receives that exact string as one argument and no shell interprets it
+
+#### Scenario: Command that looks like an option
+- **WHEN** the command is `-h`
+- **THEN** RTK does not treat it as its own option, and the command runs unchanged instead of RTK's help text
 
 ### Requirement: Exit-code contract
 The extension SHALL interpret `rtk rewrite` as follows: exit 0 or 3 with output different from the original command replaces the command; exit 1, or exit 0 or 3 with empty or identical output, leaves it unchanged; exit 2 with output blocks the call with that output as the reason; exit 2 without output leaves it unchanged.

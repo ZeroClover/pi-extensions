@@ -2,7 +2,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BUILTIN_ADAPTERS } from "../src/adapters.ts";
-import { formatStatus, parseRtkArgs } from "../src/command.ts";
+import { formatStatus, onNotice, parseRtkArgs } from "../src/command.ts";
 import { checkVersion, MAX_CONSECUTIVE_FAILURES, RECHECK_MS, type Reporter, RtkController } from "../src/controller.ts";
 import type { RtkRun } from "../src/outcome.ts";
 import type { Run, RunOptions } from "../src/run.ts";
@@ -25,7 +25,7 @@ function fakeRtk(rewrite: (command: string) => RtkRun, version: () => RtkRun = (
 	const calls: Call[] = [];
 	const run: Run = async (_file, args, options) => {
 		calls.push({ args, options });
-		return args[0] === "--version" ? version() : rewrite(args[1] ?? "");
+		return args[0] === "--version" ? version() : rewrite(args[2] ?? "");
 	};
 	return { run, calls };
 }
@@ -64,6 +64,7 @@ describe("RtkController.handleToolCall", () => {
 		const exec = { cmd: "git diff", workdir: "." };
 		await controller.handleToolCall("exec_command", exec, cwd, undefined, reporter);
 		expect(exec.cmd).toBe("rtk git diff");
+		expect(calls.at(-1)?.args).toEqual(["rewrite", "--", "git diff"]);
 		expect(calls.at(-1)?.options.cwd).toBe(cwd);
 		expect(controller.counts.rewritten).toBe(2);
 	});
@@ -229,6 +230,20 @@ describe("/rtk", () => {
 		expect(parseRtkArgs(" ON ")).toEqual({ kind: "on" });
 		expect(parseRtkArgs("off")).toEqual({ kind: "off" });
 		expect(parseRtkArgs("stats")).toEqual({ kind: "usage" });
+	});
+
+	it("warns from /rtk on while RTK_DISABLED=1 keeps rewriting off", async () => {
+		const { run } = fakeRtk(() => exited(1));
+		expect(onNotice((await started(run)).controller)).toEqual({
+			message: "pi-rtk: on for this session",
+			level: "info",
+		});
+		expect(onNotice((await started(run, { env: { RTK_DISABLED: "1" } })).controller)?.level).toBe("warning");
+		const missingRtk = fakeRtk(
+			() => exited(1),
+			() => missing,
+		);
+		expect(onNotice((await started(missingRtk.run)).controller)).toBeUndefined();
 	});
 
 	it("reports state, tools, and counts", async () => {
