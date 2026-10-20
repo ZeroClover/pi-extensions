@@ -1,0 +1,37 @@
+{
+	"name": "@zeroclover/pi-rtk",
+	"version": "0.1.0",
+	"description": "Routes shell commands from Pi's bash tool and third-party exec tools through RTK for compact, token-efficient output",
+	"license": "AGPL-3.0-only",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ZeroClover/pi-extensions.git",
+		"directory": "packages/pi-rtk"
+	},
+	"homepage": "https://github.com/ZeroClover/pi-extensions/tree/master/packages/pi-rtk#readme",
+	"bugs": {
+		"url": "https://github.com/ZeroClover/pi-extensions/issues"
+	},
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-extension",
+		"rtk"
+	],
+	"files": [
+		"src",
+		"README.md",
+		"CHANGELOG.md"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"pi": {
+		"extensions": [
+			"./src/index.ts"
+		]
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}
