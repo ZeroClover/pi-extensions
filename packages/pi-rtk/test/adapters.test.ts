@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { BUILTIN_ADAPTERS, resolveTarget, type ToolAdapter } from "../src/adapters.ts";
 
@@ -76,7 +77,7 @@ describe("resolveTarget", () => {
 
 	it("resolves the working directory field against the session cwd", () => {
 		expect(resolveTarget(exec, { cmd: "ls", workdir: "packages" }, "/repo", "linux")).toMatchObject({
-			cwd: "/repo/packages",
+			cwd: resolve("/repo", "packages"),
 		});
 		expect(resolveTarget(exec, { cmd: "ls", workdir: "/tmp" }, "/repo", "linux")).toMatchObject({ cwd: "/tmp" });
 		expect(resolveTarget(exec, { cmd: "ls", workdir: 7 }, "/repo", "linux")).toMatchObject({ cwd: "/repo" });
