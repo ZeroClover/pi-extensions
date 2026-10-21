@@ -1,5 +1,11 @@
 # @zeroclover/pi-tps
 
+## 0.3.1
+
+### Patch Changes
+
+- A response's calibration samples are stored with one write instead of up to four, so less synchronous disk I/O runs when a response ends.
+
 ## 0.3.0
 
 ### Minor Changes

@@ -22,3 +22,7 @@
   dir: packages/pi-tps
   intents:
     - smart-spoons-count
+"@zeroclover/pi-tps@0.3.1":
+  dir: packages/pi-tps
+  intents:
+    - tame-kids-fail
