@@ -185,24 +185,31 @@ Publication stays blocked until the owner completes each input. Missing inputs a
 | Rebase merging disabled; Squash and/or Merge enabled | `gh repo view ZeroClover/pi-extensions --json mergeCommitAllowed,squashMergeAllowed,rebaseMergeAllowed` |
 | `master`: no force pushes or deletion, required check `Check`, no merge queue, pull requests only | `gh api repos/ZeroClover/pi-extensions/rules/branches/master` |
 | npm: publish access to the `@zeroclover` scope, 2FA on the publishing account | owner |
-| npm trusted publisher for each package, after its first version (below) | the package's settings on npmjs.com |
+| npm trusted publisher for each package, once the package exists (below) | the package's settings on npmjs.com |
 
 While direct pushes to `master` are still allowed, the tooling keeps enforcing the protocol: a push that changes release records publishes only as the squash or merge commit of a merged pull request, so a preparation never ships from a direct push.
 
 ### First release of a package
 
-npm adds a trusted publisher in an existing package's settings, so each new package's first version is published once with the owner's credentials (bootstrap):
+npm adds a trusted publisher only in an existing package's settings, and no first publish runs through one. The owner therefore creates each new package once by staging a placeholder (bootstrap); every real version, the first included, is then uploaded by CI with provenance. Staging a name that does not exist yet makes npm publish a public `0.0.0-stage` placeholder, while the staged tarball stays private until approved.
 
-1. Merge the reviewed preparation as usual. The release run verifies the batch and uploads the `release-batch` artifact; its publish job then fails at the upload because no npm credential exists yet. Nothing is published.
-2. Download the verified artifact with `gh run download <run-id> -n release-batch` and check each tarball against `batch.json` with `shasum -a 256`.
-3. Publish exactly that tarball with the owner's npm login: `pnpm publish <tgz> --access public` (2FA asks for a one-time password).
-4. Re-run the failed jobs of the same run. The publish job finds the version on the registry, skips the upload, and creates the tag and GitHub Release.
+1. Outside the repository, logged in as the owner (npm 11.15.0 or later, Node 22.14.0 or later), create an empty directory whose `package.json` holds only `name` (`@zeroclover/<name>`), `version` `0.0.0`, a `description` naming the repository, and `publishConfig.access` `"public"`. Never use the manifest's version: pnpm prepares the first release at that version only while it is absent from the registry (First releases).
+2. Stage it from that directory with `npm stage publish --access public`, and do not approve the stage. The package now exists with its `0.0.0-stage` placeholder.
+3. Add the trusted publisher (below) right before merging the preparation that first uploads the package.
+4. Merge the reviewed preparation as usual. CI uploads the first version through the trusted publisher and creates the tag and GitHub Release.
+5. Deprecate the placeholder: `npm deprecate @zeroclover/<name>@0.0.0-stage "Placeholder that reserved the package name; use 0.1.0 or later"`.
+
+Leave the placeholder stage pending; never reject it before the first CI-published version is on the registry, because rejecting the only stage of a new package has been reported to delete the package together with its trusted publisher. Never unpublish a placeholder; deprecate it.
+
+If npmjs.com offers no trusted publisher settings while the placeholder stage is pending, approve it instead (`npm stage list @zeroclover/<name>`, then `npm stage approve <stage-id>` with 2FA). The empty `0.0.0` becomes a real version: continue with step 3 and deprecate `0.0.0` in step 5 as well.
+
+If the publish job fails at the upload because the new package's trusted publisher is missing or expired, create it again and re-run the failed jobs of the same run while it is valid. The re-run skips batch members already on the registry and uploads the rest; that upload is the publish that validates the new configuration.
 
 A bootstrap is owner-approved: agents never perform it, merge a preparation, or dispatch a release without explicit authorization for that action. No manual tag is needed.
 
 ### Trusted publisher
 
-Add it in the package's settings on npmjs.com: provider GitHub Actions, owner `ZeroClover`, repository `pi-extensions`, workflow `release.yml`, no environment, and allow direct `npm publish`. Configurations created after 2026-09-03 otherwise allow only `npm stage publish`, and this workflow publishes directly.
+Add it in the package's settings on npmjs.com: provider GitHub Actions, owner `ZeroClover`, repository `pi-extensions`, workflow `release.yml`, no environment, and allow direct `npm publish`. Configurations created after 2026-09-03 otherwise allow only `npm stage publish`, and this workflow publishes directly. The CLI equivalent is `npm trust github @zeroclover/<name> --file release.yml --repo ZeroClover/pi-extensions --allow-publish` (npm 11.15.0 or later, interactive 2FA).
 
 A new configuration expires unless a publish through it succeeds within two days; a re-run that only skips existing versions does not count. Add it right before merging the next preparation that uploads the package, and delete and recreate it if it expired. Once it has published, set the package's publishing access to "Require two-factor authentication and disallow tokens".
 
