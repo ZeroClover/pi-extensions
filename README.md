@@ -33,6 +33,8 @@ pi install git:github.com/ZeroClover/pi-extensions
 
 Each package's README documents its tools, commands, and configuration.
 
+Extensions are developed and tested against Pi's latest stable release and do not support older ones. If an extension fails to load or misbehaves, update Pi first.
+
 ## Layout
 
 ```

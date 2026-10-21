@@ -212,7 +212,7 @@ All durations use a monotonic clock (`performance.now`).
 
 ### Thinking by backend
 
-How much of the thinking phase pi-tps can time depends on what Pi's provider adapter exposes (Pi 1.1):
+How much of the thinking phase pi-tps can time depends on what Pi's provider adapter exposes (Pi 1.3):
 
 | Backend | Start of a thinking block | Hidden reasoning | `usage.reasoning` |
 |---|---|---|---|

@@ -2,7 +2,7 @@
 
 ## Plan with OpenSpec
 
-Non-trivial work (a new extension, a new tool or command, a behavior change, a removal) is planned with OpenSpec before code is written. Trivial fixes (typos, a one-line bug with an obvious test) can skip it.
+Non-trivial work (a new extension, a new tool or command, a behavior change, a removal) is planned with OpenSpec before code is written. Trivial fixes (typos, a one-line bug with an obvious test) and Pi host upgrades ("Track the latest Pi") skip it.
 
 Two roots exist, and the CLI picks the nearest one above the working directory:
 
@@ -22,6 +22,8 @@ The workflow is the standard OpenSpec one, available as skills in `.agents/skill
 A package's `openspec/specs/` is the current description of what that extension does; keep it truthful when archiving.
 
 ## Create a new extension
+
+Start on the current Pi target ("Track the latest Pi").
 
 1. Choose a name: `pi-<topic>`, lowercase, hyphenated. The directory is `packages/pi-<topic>/` and the npm `name` is `@zeroclover/pi-<topic>`; the commit scope is the bare directory name.
 2. Create the package from the templates below. Replace `<name>` and the placeholder text.
@@ -197,10 +199,10 @@ Every source change ends with these, run from the repository root:
 1. `pnpm check`: Biome, `tsc`, and Vitest must all pass with no warnings you introduced. Vitest runs every package's end-to-end scenarios, each in a real Pi session with a scripted provider (`tools/e2e/`), the release tooling's CLI scenarios, and loads every package in Pi without a model call (`tools/release/test/load.test.ts`), so a package that fails to load fails `pnpm check`. Run one package's scenarios with `pnpm vitest run packages/<name>`. To see one package's load result or its commands directly:
 
    ```bash
-   printf '{"id":"1","type":"get_commands"}\n' | pi -ne -e ./packages/<name> --mode rpc
+   printf '{"id":"1","type":"get_commands"}\n' | pnpm exec pi -ne -e ./packages/<name> --mode rpc
    ```
 
-2. For behavior the end-to-end scenarios cannot reach (a real model, a real terminal, a third-party extension), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
+2. For behavior the end-to-end scenarios cannot reach (a real model, a real terminal, a third-party extension), run `pnpm exec pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. `pnpm exec pi` runs the workspace's Pi, the current target, with your usual agent directory and credentials; a globally installed `pi` may be another version. State in the final report exactly what was exercised.
 
 CI repeats `pnpm check` on the pull request and also runs `pnpm change check`, the release-impact gate, and the artifact preflight (`docs/releases.md`); there is no need to run those locally. To debug a failing gate, run it on the committed branch: `node tools/release/src/cli.ts coverage --base origin/master --head HEAD`.
 
@@ -209,6 +211,8 @@ A release preparation pull request changes no source. It is verified by the revi
 A running Pi session keeps the extension code it loaded at startup. After editing `src/`, restart Pi (or `/reload`) before testing again.
 
 ## Change an existing extension
+
+Start on the current Pi target ("Track the latest Pi").
 
 1. Read the package README, `openspec/specs/`, and `src/index.ts` first, then the modules you touch.
 2. For non-trivial changes, propose from `packages/<name>/` and wait for review.
@@ -225,6 +229,25 @@ Delete `packages/<name>/` (its OpenSpec root goes with it), remove its row from 
 
 Releasing is a separate step taken only on an explicit request: prepare versions locally, review, open a release-focused pull request, and let CI publish after the merge. The procedure, including recovery, is `docs/releases.md`.
 
-## Upgrade Pi
+## Track the latest Pi
 
-The root `devDependencies` pin the Pi host packages that provide types, docs, and examples. Keep them at the version of the installed `pi` (`pi --version`). To upgrade: bump all `@earendil-works/*` entries together, run `pnpm install`, read `node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md` for breaking changes, and run `pnpm check`, which loads every package in the new host.
+There is no fixed Pi version. Extensions are developed, maintained, and verified against Pi's latest stable release: the version the npm `latest` dist-tag of `@earendil-works/pi-coding-agent` names at the time of the work. Prereleases and other dist-tags never become the target.
+
+The root `devDependencies` state the target as exact versions: `@earendil-works/pi-coding-agent` at the target, and `@earendil-works/pi-ai`, `@earendil-works/pi-tui`, `@earendil-works/pi-agent-core`, and `typebox` at the exact versions that release depends on, not at their own latest releases. They provide the types, docs, and examples (`docs/pi-reference.md`), the host of the end-to-end scenarios and the load test, and the `pi` of `pnpm exec pi`.
+
+Before creating, changing, or debugging an extension, compare the root entry with the registry:
+
+```bash
+pnpm view @earendil-works/pi-coding-agent version
+```
+
+If it matches, continue. If the registry cannot be reached, continue on the pinned host and say in the report that the target could not be confirmed. If Pi has a newer release, upgrade first. The upgrade is routine maintenance: do it yourself, without an OpenSpec proposal or a separate request, in its own pull request before the extension work.
+
+1. Read the versions to pin: `pnpm view @earendil-works/pi-coding-agent@<version> dependencies`.
+2. Set all five root entries to those exact versions (no `^`), then run `pnpm install`.
+3. Read `node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md` for every release since the previous target, and check each breaking change against the APIs the packages use.
+4. Run `pnpm check`. Fix every package it breaks in the same pull request, each with its release decision (`docs/releases.md`). A fix that changes a package's user-visible behavior is proposed in that package's OpenSpec root first.
+5. Re-verify statements in package READMEs and specs that describe Pi's behavior and name the release they were checked against (`rg -n "Pi [0-9]" packages/*/README.md packages/*/openspec/specs`); update each statement and its label to the new target, with a release decision for each README you change.
+6. Commit as `chore(repo): upgrade Pi host to <version>`.
+
+Extensions use the target's API only: no fallbacks, feature detection, or shims for older Pi releases, and no declared minimum version; host packages stay `"*"` peers. CI installs from the frozen lockfile and never compares it with the registry, so a Pi release does not change the result of an existing pull request; the next extension task picks it up.
