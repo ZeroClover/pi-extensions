@@ -1,6 +1,7 @@
-import { appendFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { appendFile, mkdir, mkdtemp } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { assertOutside } from "./artifact.ts";
 import {
 	authorize,
 	checkCoverage,
@@ -8,6 +9,7 @@ import {
 	type Plan,
 	planDispatch,
 	planPush,
+	preflightRelease,
 	publishRelease,
 	verifyRelease,
 } from "./commands.ts";
@@ -26,6 +28,7 @@ const USAGE = `usage: node tools/release/src/cli.ts <command> [options]
   plan      --event dispatch --source <sha> --repo <owner/name> --default-branch <name>
   authorize --source <sha> --default-branch <name>
   verify    --source <sha> --source-dir <dir> --out <dir> --work-dir <dir>
+  preflight --base <rev> --head <rev> --work-dir <dir>   (run in the checkout of --head)
   publish   --source <sha> --artifacts <dir> --repo <owner/name> --default-branch <name>
 
 See docs/releases.md.`;
@@ -196,6 +199,31 @@ async function main(argv: readonly string[]): Promise<number> {
 				write(
 					`verified ${artifact.key}: ${artifact.file} sha256 ${artifact.sha256}, commands [${artifact.commands.join(", ")}]`,
 				);
+			}
+			return 0;
+		}
+		case "preflight": {
+			const workDir = resolve(required(values, "work-dir"));
+			assertOutside(cwd, workDir);
+			await mkdir(workDir, { recursive: true });
+			const result = await preflightRelease(
+				repo,
+				{
+					run: runCommand,
+					sourceDir: cwd,
+					outDir: await mkdtemp(join(workDir, "artifacts-")),
+					workDir,
+					hostBin: resolve(cwd, "node_modules/.bin/pi"),
+				},
+				{ baseRev: required(values, "base"), headRev: required(values, "head") },
+			);
+			if (result === undefined) {
+				write("artifact preflight: no new release records; nothing to pack");
+				return 0;
+			}
+			write(`artifact preflight against merge base ${result.mergeBase}:`);
+			for (const artifact of result.artifacts) {
+				write(`  ${artifact.key}: ${artifact.file}, commands [${artifact.commands.join(", ")}]`);
 			}
 			return 0;
 		}

@@ -74,7 +74,7 @@ The gate verifies that a decision exists; it does not judge the bump type. `pnpm
 
 ## 2. Prepare a release locally
 
-Do this only on an explicit release request. Source changes and their intents must already be merged; the preparation pull request contains only generated release files and reviewed prose.
+Do this only on an explicit release request. Source changes and their intents must already be merged; the preparation pull request contains only generated release files and reviewed prose. The review in the steps below and CI verify it; the source-change verification in `docs/workflow.md` (local `pnpm check`, live checks) does not apply.
 
 1. Update the default branch and start a release branch from it. The working tree must be clean: commit everything first. `pnpm version -r` refuses a dirty tree (`ERR_PNPM_UNCLEAN_WORKING_TREE`); `--dry-run` works on a dirty tree, but never use `--no-git-checks` to prepare.
 2. Inspect what is pending: `pnpm change status`.
@@ -89,7 +89,7 @@ Do this only on an explicit release request. Source changes and their intents mu
 4. Review the plan: every package, its exact version, and its cause. A filter can expand through `workspace:` dependents or fixed groups (`via dependencies` in the plan). pnpm records no ledger entry for a dependency-propagated bump, and CI rejects a version change without a record, so every package in the plan needs its own reviewed intent. If one lacks it, stop: record that intent in a separate pull request, merge it, and start the release branch again from the updated default branch. Every intent a preparation consumes must already be pending on the default branch; CI rejects records whose intents were not. CI never adds packages to a batch.
 5. Apply the same selection without `--dry-run`. pnpm creates no commit or tag.
 6. Review the result before committing: each manifest version, the new `.changeset/ledger.yaml` records, consumed and remaining intent files, the lockfile if it changed, and every new `CHANGELOG.md` section. Edit the section prose freely; keep its `## <version>` heading and never edit versions or ledger records by hand.
-7. Commit (`chore(release): ...`), push, and open a pull request. Further commits on that branch (prose fixes, README updates) are fine; the final reviewed snapshot is what ships.
+7. Commit (`chore(release): ...`), push, and open a pull request. Further commits on that branch (prose fixes, README updates) are fine; the final reviewed snapshot is what ships. CI runs the artifact preflight on the pull request (§4); fix a failure on the branch before merging, so a broken artifact never needs a withdrawal.
 
 ### First releases
 
@@ -126,7 +126,7 @@ Do not merge a preparation while an earlier batch is still incomplete; reconcile
 
 ## 4. What CI does
 
-`.github/workflows/ci.yml` runs on every pull request and default-branch push: `pnpm install --frozen-lockfile`, `pnpm check`, `pnpm change check`, and, on pull requests, the release-impact gate.
+`.github/workflows/ci.yml` runs on every pull request and default-branch push: `pnpm install --frozen-lockfile`, `pnpm check` (which also loads every workspace extension in Pi), `pnpm change check`, and, on pull requests, the release-impact gate and the artifact preflight (`cli.ts preflight`, read-only). The preflight reads the release records the pull request's checked-out merge commit adds relative to its merge base with the base branch, validates them as Plan does, and packs, inspects, installs, and loads them exactly as Verify does (step 2), without writing a batch file. A pull request without new records passes as a no-op.
 
 `.github/workflows/release.yml` runs on every default-branch push and on recovery dispatch. Tags never trigger it.
 
@@ -215,4 +215,4 @@ A new configuration expires unless a publish through it succeeds within two days
 
 ## Tooling
 
-`tools/release/` holds the repository-specific checks, run with Node's built-in TypeScript support and covered by `pnpm check`: intent coverage (`coverage.ts`), fixed-parent batch reading and validation (`batch.ts`, `repository.ts`), authorization continuity (`authorization.ts`), changelog extraction (`changelog.ts`), and publication orchestration (`commands.ts`, `publish.ts`, `artifact.ts`) behind thin Git, registry, and GitHub adapters. `node tools/release/src/cli.ts help` lists the commands; CI is the normal caller.
+`tools/release/` holds the repository-specific checks, run with Node's built-in TypeScript support and covered by `pnpm check`: intent coverage (`coverage.ts`), fixed-parent batch reading and validation (`batch.ts`, `repository.ts`), authorization continuity (`authorization.ts`), changelog extraction (`changelog.ts`), and publication orchestration (`commands.ts`, `publish.ts`, `artifact.ts`) behind thin Git, registry, and GitHub adapters. `test/load.test.ts` loads every workspace extension with the same helper as Verify and runs as part of `pnpm check`. `node tools/release/src/cli.ts help` lists the commands; CI is the normal caller.

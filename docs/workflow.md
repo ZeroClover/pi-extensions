@@ -40,8 +40,8 @@ A package's `openspec/specs/` is the current description of what that extension 
      Scope: the pi-<name> extension in this directory only. Repository-wide
      concerns belong to the repository root's openspec/.
      Constraints: follow ../../AGENTS.md and ../../docs/conventions.md.
-     Verification for every change: pnpm check from the repository root and
-     the load smoke test in ../../docs/workflow.md.
+     Verification for every change: pnpm check from the repository root (it
+     loads the extension in Pi) and the live checks in ../../docs/workflow.md.
    ```
 
 4. Run `pnpm install` so the workspace knows the package.
@@ -166,18 +166,19 @@ pi install /absolute/path/to/packages/<name>  # install a repository checkout fo
 
 ## Verify
 
-Every change ends with all of these, run from the repository root:
+Every source change ends with these, run from the repository root:
 
-1. `pnpm check`: Biome, `tsc`, and Vitest must all pass with no warnings you introduced.
-2. Load smoke test without a model call:
+1. `pnpm check`: Biome, `tsc`, and Vitest must all pass with no warnings you introduced. Vitest also loads every package in Pi without a model call (`tools/release/test/load.test.ts`), so a package that fails to load fails `pnpm check`. To see one package's load result or its commands directly:
 
    ```bash
    printf '{"id":"1","type":"get_commands"}\n' | pi -ne -e ./packages/<name> --mode rpc
    ```
 
-   Exit code 0 and the package's commands in the response mean the extension loaded. A load failure prints `Failed to load extension` and exits non-zero.
-3. For behavior that needs a live session (tools the model calls, UI, events), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
-4. Release-impact gate, as CI runs it on pull requests, once the change is committed on a branch: `node tools/release/src/cli.ts coverage --base master --head HEAD`. It fails when a plugin's published content changed without a release decision (`docs/releases.md`).
+2. For behavior that needs a live session (tools the model calls, UI, events), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
+
+CI repeats `pnpm check` on the pull request and also runs `pnpm change check`, the release-impact gate, and the artifact preflight (`docs/releases.md`); there is no need to run those locally. To debug a failing gate, run it on the committed branch: `node tools/release/src/cli.ts coverage --base origin/master --head HEAD`.
+
+A release preparation pull request changes no source. It is verified by the review in `docs/releases.md` §2 and by CI, not by this section.
 
 A running Pi session keeps the extension code it loaded at startup. After editing `src/`, restart Pi (or `/reload`) before testing again.
 
@@ -200,4 +201,4 @@ Releasing is a separate step taken only on an explicit request: prepare versions
 
 ## Upgrade Pi
 
-The root `devDependencies` pin the Pi host packages that provide types, docs, and examples. Keep them at the version of the installed `pi` (`pi --version`). To upgrade: bump all `@earendil-works/*` entries together, run `pnpm install`, read `node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md` for breaking changes, run `pnpm check`, and smoke-test every package.
+The root `devDependencies` pin the Pi host packages that provide types, docs, and examples. Keep them at the version of the installed `pi` (`pi --version`). To upgrade: bump all `@earendil-works/*` entries together, run `pnpm install`, read `node_modules/@earendil-works/pi-coding-agent/CHANGELOG.md` for breaking changes, and run `pnpm check`, which loads every package in the new host.

@@ -20,5 +20,5 @@ rules:
     - State which packages, if any, are affected and why the change is repo-wide
       rather than package-scoped.
   tasks:
-    - End with a verification task that runs `pnpm check` and, when packages are
-      affected, the load smoke test from docs/workflow.md.
+    - End with a verification task that runs `pnpm check`, which also loads
+      every package in Pi (docs/workflow.md, "Verify").

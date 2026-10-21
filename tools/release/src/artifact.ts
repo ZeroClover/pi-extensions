@@ -180,7 +180,11 @@ export function assertOutside(workspace: string, dir: string): void {
 }
 
 /** Loads one extension in the targeted Pi host with an empty agent directory and returns its commands. */
-async function loadCommands(ctx: VerifyContext, extension: string, cwd: string): Promise<string[]> {
+export async function loadCommands(
+	ctx: Pick<VerifyContext, "run" | "workDir" | "hostBin">,
+	extension: string,
+	cwd: string,
+): Promise<string[]> {
 	const agentDir = await mkdtemp(join(ctx.workDir, "agent-"));
 	const result = await ctx.run(ctx.hostBin, ["-ne", "-e", extension, "--mode", "rpc"], {
 		cwd,
