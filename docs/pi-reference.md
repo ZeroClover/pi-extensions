@@ -1,6 +1,6 @@
 # Pi reference
 
-Pi's own documentation, examples, and type declarations are the source of truth for its API. They ship inside the host package and are installed by `pnpm install`, so the copy under `node_modules` always matches the version this repository targets.
+Pi's own documentation, examples, and type declarations are the source of truth for its API. They ship inside the host package and are installed by `pnpm install`, so the copy under `node_modules` is the version the root `package.json` pins: Pi's latest stable release, kept current as `docs/workflow.md`, "Track the latest Pi", describes.
 
 ```
 node_modules/@earendil-works/pi-coding-agent/

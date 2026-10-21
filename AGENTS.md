@@ -6,7 +6,8 @@ This repository is a pnpm monorepo of extensions for [Pi](https://pi.dev), the c
 
 - Read the document that matches your task from the index below, completely, before editing.
 - Load the `pi-extension-dev` skill (`.agents/skills/pi-extension-dev/SKILL.md`) whenever you create, change, or debug an extension.
-- Pi's API changes quickly. Answer every API question from the docs, examples, and type declarations of the installed Pi version under `node_modules/@earendil-works/pi-coding-agent/` (see `docs/pi-reference.md`), not from memory.
+- There is no fixed Pi version: extension work always targets Pi's latest stable release. Before creating, changing, or debugging an extension, check that the root pins it, and upgrade first if not, without a proposal (`docs/workflow.md`, "Track the latest Pi").
+- Pi's API changes quickly. Answer every API question from the docs, examples, and type declarations of that version under `node_modules/@earendil-works/pi-coding-agent/` (see `docs/pi-reference.md`), not from memory.
 
 ## Rules
 
@@ -43,6 +44,6 @@ Run from the repository root.
 |---|---|
 | need the repository layout or the anatomy of a package | `docs/architecture.md` |
 | write or review TypeScript, choose dependencies, design tools, events, or UI | `docs/conventions.md` |
-| create, change, verify, or ship an extension; plan with OpenSpec | `docs/workflow.md` |
+| create, change, verify, or ship an extension; plan with OpenSpec; upgrade Pi | `docs/workflow.md` |
 | decide release impact, prepare a release, or report or recover a publication | `docs/releases.md` |
 | look up Pi's API, examples, docs, or type declarations | `docs/pi-reference.md` |

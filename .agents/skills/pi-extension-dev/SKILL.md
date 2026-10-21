@@ -10,7 +10,7 @@ This repository's rules are in `AGENTS.md` and `docs/` at the repository root. T
 ## Procedure
 
 1. Read `docs/conventions.md` and `docs/workflow.md` if not already read in this session.
-2. Make sure `node_modules/@earendil-works/pi-coding-agent/` exists; run `pnpm install` if not. It contains Pi's docs, examples, and types for the targeted version.
+2. Check the Pi target: compare `pnpm view @earendil-works/pi-coding-agent version` with the root `package.json`, and if Pi has a newer stable release, upgrade the host first, without a proposal (`docs/workflow.md`, "Track the latest Pi"). Make sure `node_modules/@earendil-works/pi-coding-agent/` exists; run `pnpm install` if not. It contains Pi's docs, examples, and types for that version.
 3. For non-trivial work, plan with OpenSpec first using the package directory as the working directory (`docs/workflow.md`, "Plan with OpenSpec"); a new package gets its own root via `openspec init packages/<name> --tools none`.
 4. For every Pi API you will touch, read the relevant section of `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md` (or the doc named in `docs/pi-reference.md`) and open the closest example under `examples/extensions/`. Confirm signatures in `dist/index.d.ts` when the doc is not explicit.
 5. Implement with `src/index.ts` as thin wiring and logic in separate modules. Test the behavior end to end: scenarios in `packages/<name>/test/` that start a real Pi session through `tools/e2e/src/` (`startPi`), name the failure they prevent and the spec requirement they cover, and never import `src/` or fake `pi`/`ctx` (`docs/conventions.md`, "Tests"). A bug fix adds a scenario that fails before the fix.
