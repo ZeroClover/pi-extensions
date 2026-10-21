@@ -148,8 +148,8 @@ The classifier SHALL recognise the error wording of every provider API Pi ships 
 - **THEN** the category is `quota`, a 12-minute hint is found, and the failure is retryable when the limit is 30 minutes
 
 #### Scenario: Pi's lists are covered with documented differences
-- **WHEN** the vocabulary test table is run over every entry of Pi's built-in retryable and non-retryable pattern lists
-- **THEN** each entry has a row with its expected category and decision, each row states whether it agrees with Pi's decision, and the rows marked as differing are only those verified against Pi's `isRetryableAssistantError`: plain `quota exceeded` (Pi: non-retryable; here `rate_limit`, because Google's per-minute `Quota exceeded for quota metric` resets) and bare status numbers (Pi: retryable anywhere; here recognised only in status positions). `429 insufficient_quota` agrees with Pi (`quota`, not retryable without a hint) and is kept as a precedence regression row
+- **WHEN** an error text matches an entry of Pi's built-in retryable or non-retryable pattern lists
+- **THEN** the retry decision agrees with Pi's `isRetryableAssistantError`, except for plain `quota exceeded` (Pi: non-retryable; here `rate_limit`, because Google's per-minute `Quota exceeded for quota metric` resets) and bare status numbers (Pi: retryable anywhere; here recognised only in status positions); `429 insufficient_quota` agrees with Pi (`quota`, not retryable without a hint)
 
 #### Scenario: Google per-minute quota
 - **WHEN** the error text is `429 Quota exceeded for quota metric 'Generate requests per minute'`
