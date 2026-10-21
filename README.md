@@ -39,6 +39,7 @@ Each package's README documents its tools, commands, and configuration.
 .
 ├── packages/<name>/        one Pi package per directory, published as @zeroclover/<name>
 ├── .changeset/             release intents and the release ledger, written by pnpm change / version
+├── tools/e2e/              end-to-end test harness: a real Pi session with a scripted provider and recording UI
 ├── tools/release/          release checks and publication tooling used by CI, with tests
 ├── .github/workflows/      CI checks and the release workflow
 ├── docs/                   architecture, conventions, workflow, releases, and Pi reference

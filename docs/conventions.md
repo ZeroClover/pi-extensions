@@ -79,9 +79,18 @@ Rebuild in-memory state from `ctx.sessionManager.getBranch()` on `session_start`
 
 ## Tests
 
-- Vitest, files under `packages/<name>/test/*.test.ts`; root tooling tests live under `tools/<name>/test/`.
-- Test implementation modules directly. Do not mock `ExtensionAPI` to test wiring; keep `index.ts` thin instead.
-- Every bug fix adds a test that failed before the fix.
+Tests are end-to-end: they check what a user or a workflow can observe, through the same boundaries the code meets in production. `openspec/specs/change-verification` holds the requirements.
+
+- Vitest, files under `packages/<name>/test/*.test.ts`; root tooling tests live under `tools/<name>/test/`. Package-specific fixtures (fake programs, stub tools, data tables, worker scripts) stay in the package's `test/`; only generic machinery belongs in `tools/e2e/`.
+- An extension test starts a real Pi session with the package loaded from `packages/<name>/` through `startPi` from `tools/e2e/src/`, and drives it as a user would: a scripted provider answers the model's requests (its stream events are the only model double), a recording UI stands in for the terminal, and temporary executables on `PATH` stand in for programs outside the repository. Stub tools may stand in for the tools of third-party extensions the package adapts to.
+- Assert only on what the session exposes: tool results, the requests the provider received, notifications, status text, session entries, event-bus payloads, and files the extension writes.
+- Never import a package's `src/` at runtime. Type-only imports of payload types the package documents as public are allowed. Never fabricate Pi's extension events (the payloads Pi delivers to `pi.on` handlers) or `pi`/`ctx` objects; a behavior-neutral refactor of `src/` must not require a test change.
+- Release tooling tests run `node tools/release/src/cli.ts` as a process in a temporary git repository whose release files come from real `pnpm change` and `pnpm version -r`; GitHub and the registry are replaced only at the process boundary.
+- Name each `it(...)` after the user-visible failure it prevents, and cite the spec requirement it covers in a one-line comment. Do not add a test only to raise coverage or to restate a value the code computes.
+- Time-dependent assertions use bands: rates within ±30% of the scripted rate, durations as lower bounds, upper bounds only where the behavior is "early" and then with a margin of at least 1 s. Fix a flaky test by widening its band or rewriting it, never by retrying.
+- Tests need no network, credentials, or model calls. A check against an optional external tool is skipped, with the reason in its title, when the tool is absent.
+- Every bug fix adds or extends an end-to-end test that fails without the fix and passes with it.
+- A new scenario counts only after it was seen to fail against a deliberately broken extension (a temporary, uncommitted edit) and to pass on the real code.
 
 ## Documentation
 
