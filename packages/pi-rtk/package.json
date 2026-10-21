@@ -1,7 +1,7 @@
 {
 	"name": "@zeroclover/pi-rtk",
 	"version": "0.1.0",
-	"description": "Routes shell commands from Pi's bash tool and third-party exec tools through RTK for compact, token-efficient output",
+	"description": "Routes shell commands from Pi's bash and third-party exec tools through RTK for compact, token-efficient output",
 	"license": "AGPL-3.0-only",
 	"repository": {
 		"type": "git",

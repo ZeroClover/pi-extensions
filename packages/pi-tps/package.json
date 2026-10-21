@@ -1,7 +1,7 @@
 {
 	"name": "@zeroclover/pi-tps",
 	"version": "0.3.0",
-	"description": "Tokens-per-second readout in the footer: live TPS and TTFT beside the model's smoothed averages while streaming, session totals when idle, with burst detection and calibrated estimates",
+	"description": "Footer readout showing live tokens per second and time to first token alongside each model's smoothed averages and session totals",
 	"license": "AGPL-3.0-only",
 	"repository": {
 		"type": "git",

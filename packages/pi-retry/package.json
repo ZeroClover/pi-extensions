@@ -1,7 +1,7 @@
 {
 	"name": "@zeroclover/pi-retry",
 	"version": "0.1.0",
-	"description": "Automatic retry for retryable provider errors: classifies failures, honours provider retry-after hints up to a configurable limit, and backs off exponentially otherwise",
+	"description": "Retries failed model requests, honouring the wait the provider asks for or backing off exponentially",
 	"license": "AGPL-3.0-only",
 	"repository": {
 		"type": "git",
