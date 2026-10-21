@@ -275,21 +275,53 @@ export async function verifyRelease(
 	ctx: VerifyContext,
 	sourceSha: string,
 ): Promise<{ readonly source: string; readonly artifacts: readonly VerifiedArtifact[] }> {
-	const source = await repo.git.commit(sourceSha);
+	const source = await checkedOutSource(repo, ctx, sourceSha);
+	const batch = await repo.readBatch(source);
+	if (batch.kind !== "release") {
+		throw new ReleaseError(`${source} is not a release preparation`);
+	}
+	const artifacts = await verifyMembers(ctx, batch.members);
+	const file = { source, members: artifacts.map(({ key, file, sha256 }) => ({ key, file, sha256 })) };
+	await writeFile(join(ctx.outDir, BATCH_FILE), `${JSON.stringify(file, null, "\t")}\n`);
+	return { source, artifacts };
+}
+
+/**
+ * The pull request preflight: the same artifact checks as `verifyRelease` for the release records
+ * the checked-out head adds relative to its merge base with `baseRev`, before anything is merged.
+ * Without new records it is a no-op (undefined). It writes no batch file and publishes nothing.
+ */
+export async function preflightRelease(
+	repo: ReleaseRepository,
+	ctx: VerifyContext,
+	input: { readonly baseRev: string; readonly headRev: string },
+): Promise<{ readonly mergeBase: string; readonly artifacts: readonly VerifiedArtifact[] } | undefined> {
+	const head = await checkedOutSource(repo, ctx, input.headRev);
+	const mergeBase = await repo.git.mergeBase(await repo.git.commit(input.baseRev), head);
+	const batch = await repo.readBatch(head, mergeBase);
+	if (batch.kind !== "release") {
+		return undefined;
+	}
+	return { mergeBase, artifacts: await verifyMembers(ctx, batch.members) };
+}
+
+async function checkedOutSource(repo: ReleaseRepository, ctx: VerifyContext, rev: string): Promise<string> {
+	const source = await repo.git.commit(rev);
 	const checkout = await new Git(ctx.run, ctx.sourceDir).commit("HEAD");
 	if (checkout !== source) {
 		throw new ReleaseError(`the source checkout is at ${checkout}, not the release commit ${source}`);
 	}
 	assertOutside(ctx.sourceDir, ctx.workDir);
-	const batch = await repo.readBatch(source);
-	if (batch.kind !== "release") {
-		throw new ReleaseError(`${source} is not a release preparation`);
-	}
+	return source;
+}
+
+/** Packs every member, then installs and loads each; one failing member fails the whole batch. */
+async function verifyMembers(ctx: VerifyContext, members: readonly PreparedMember[]): Promise<VerifiedArtifact[]> {
 	const failed = (problems: readonly string[]): ReleaseError =>
 		problemList("artifact preflight failed; no member of this batch may be uploaded:", problems);
 	const packed: PackedArtifact[] = [];
 	const problems: string[] = [];
-	for (const member of batch.members) {
+	for (const member of members) {
 		try {
 			packed.push(await packArtifact(ctx, member));
 		} catch (error) {
@@ -310,9 +342,7 @@ export async function verifyRelease(
 	if (problems.length > 0) {
 		throw failed(problems);
 	}
-	const file = { source, members: artifacts.map(({ key, file, sha256 }) => ({ key, file, sha256 })) };
-	await writeFile(join(ctx.outDir, BATCH_FILE), `${JSON.stringify(file, null, "\t")}\n`);
-	return { source, artifacts };
+	return artifacts;
 }
 
 /** Authorization preflight, artifact preflight, then publication of the complete original batch. */

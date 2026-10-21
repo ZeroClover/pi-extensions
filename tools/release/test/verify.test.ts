@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { verifyRelease } from "../src/commands.ts";
+import { preflightRelease, verifyRelease } from "../src/commands.ts";
 import { type CommandResult, type Runner, runCommand } from "../src/exec.ts";
 import { Git } from "../src/git.ts";
 import { BATCH_FILE } from "../src/publish.ts";
@@ -174,5 +174,53 @@ describe("verifyRelease", () => {
 		const { result, installs } = await verify({ missing: { "pi-b": ["CHANGELOG.md"] } });
 		await expect(result).rejects.toThrow(/pi-b@0.1.0: CHANGELOG.md is not packed/);
 		expect(installs).toEqual([]);
+	});
+});
+
+describe("preflightRelease", () => {
+	async function preflight(scenario: Scenario, baseRev: string, headRev = "HEAD") {
+		const { run, installs } = runner(scenario);
+		const outDir = await mkdtemp(join(scratch, "out-"));
+		const workDir = await mkdtemp(join(scratch, "work-"));
+		const result = preflightRelease(
+			new ReleaseRepository(new Git(runCommand, repo.dir)),
+			{ run, sourceDir: repo.dir, outDir, workDir, hostBin: HOST },
+			{ baseRev, headRev },
+		);
+		return { result, installs, outDir };
+	}
+
+	it("verifies the records a pull request adds relative to its merge base, across several commits", async () => {
+		await release();
+		const base = await repo.git("rev-parse", `${source}~1`);
+		await repo.commit("docs: polish release notes");
+		const { result, outDir } = await preflight({}, base);
+		const verified = await result;
+		expect(verified?.mergeBase).toBe(base);
+		expect(verified?.artifacts.map((artifact) => artifact.key)).toEqual([`${B}@0.1.0`, `${A}@0.1.0`]);
+		await expect(readFile(join(outDir, BATCH_FILE), "utf8")).rejects.toThrow(/ENOENT/);
+	});
+
+	it("is a no-op for a pull request without new release records", async () => {
+		await release();
+		await repo.commit("docs: unrelated", { "README.md": "# repo\n" });
+		const { result, installs } = await preflight({}, source);
+		expect(await result).toBeUndefined();
+		expect(installs).toEqual([]);
+	});
+
+	it("fails the pull request when a member's installed copy does not load", async () => {
+		await release();
+		const { result } = await preflight(
+			{ installed: { "pi-b": new Error("Cannot find module 'left-pad'") } },
+			`${source}~1`,
+		);
+		await expect(result).rejects.toThrow(/pi-b@0.1.0: Pi could not load/);
+	});
+
+	it("refuses a checkout that is not the head under test", async () => {
+		await release();
+		const { result } = await preflight({}, `${source}~1`, `${source}~1`);
+		await expect(result).rejects.toThrow(/the source checkout is at/);
 	});
 });

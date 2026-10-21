@@ -140,10 +140,11 @@ export class ReleaseRepository {
 	/**
 	 * The fixed-parent batch: release records new in `source` relative to its first parent, fully
 	 * validated and in publication order. History beyond that one parent is never consulted. A
-	 * withdrawal is returned only when it restores the withdrawn pending state.
+	 * withdrawal is returned only when it restores the withdrawn pending state. `against` replaces
+	 * the first parent only for the pull request preflight, which reads the batch from its merge base.
 	 */
-	async readBatch(source: string): Promise<ReleaseBatch> {
-		const [parent] = await this.git.parents(source);
+	async readBatch(source: string, against?: string): Promise<ReleaseBatch> {
+		const parent = against ?? (await this.git.parents(source))[0];
 		if (parent === undefined) {
 			throw new ReleaseError(`${source} has no parent`);
 		}

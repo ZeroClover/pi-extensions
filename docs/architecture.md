@@ -10,7 +10,7 @@
 ├── docs/                          this documentation (releases.md is the release runbook)
 ├── openspec/                      OpenSpec root for repository-wide changes
 ├── .changeset/                    release intents (<id>.md) and ledger (ledger.yaml), written by pnpm
-├── .github/workflows/             ci.yml (checks, release-impact gate) and release.yml (publication)
+├── .github/workflows/             ci.yml (checks, release-impact gate, artifact preflight) and release.yml (publication)
 ├── tools/
 │   └── release/                   release checks and publication tooling: src/ and test/
 ├── .agents/skills/

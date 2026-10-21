@@ -14,7 +14,7 @@ This repository is a pnpm monorepo of extensions for [Pi](https://pi.dev), the c
 2. One directory, one package. `packages/<name>/` must work on its own: `pi -e ./packages/<name>` loads it, and its `package.json` declares its own `pi` manifest and dependencies. Its npm name is always `@zeroclover/<name>`: directories, OpenSpec roots, and commit scopes use the bare `<name>`; change intents, `pnpm --filter`, the registry, and release tags use the full name.
 3. Host-provided packages (`@earendil-works/pi-coding-agent`, `pi-ai`, `pi-tui`, `pi-agent-core`, `typebox`) go in `peerDependencies` with range `"*"`, never in `dependencies`. Pi supplies them at runtime; a bundled copy breaks its module mapping.
 4. TypeScript is strict (`tsconfig.base.json`) and Biome enforces lint and format. Fix the code, not the rule: no `any`, no `@ts-ignore` or `@ts-expect-error`, no `biome-ignore` without a reason, no loosening of shared config.
-5. Work is done only when verified: `pnpm check` passes and the extension loads (`docs/workflow.md`, "Verify"). Report what you ran, not what you assume.
+5. Work is done only when verified: `pnpm check` passes (it also loads every extension in Pi), plus the live checks the change needs (`docs/workflow.md`, "Verify"). CI-only checks (`pnpm change check`, the release-impact gate, the artifact preflight) need no local run, and a release preparation is verified by its review and CI (`docs/releases.md`). Report what you ran, not what you assume.
 6. Use pnpm exclusively. Never npm, npx, yarn, or bun.
 7. Commits follow Conventional Commits with the package directory name as scope (`feat(pi-foo): add /foo command`); repo-wide changes use scope `repo`. Scopes carry no versioning meaning.
 8. Keep each package's `README.md` and the extension table in the root `README.md` in sync with the code.
@@ -29,7 +29,7 @@ Run from the repository root.
 | Command | Purpose |
 |---|---|
 | `pnpm install` | Install tooling and host packages (needed for types, docs, and examples) |
-| `pnpm check` | Lint, typecheck, and test; the gate before every commit |
+| `pnpm check` | Lint, typecheck, test, and load every extension in Pi; the gate before every source commit |
 | `pnpm lint:fix` | Apply Biome fixes and formatting |
 | `pnpm typecheck` / `pnpm lint` / `pnpm test` | Individual steps of `check` |
 | `pnpm --filter @zeroclover/<name> <script>` | Run a package's own script |

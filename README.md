@@ -59,7 +59,7 @@ Requirements: Node 22 or newer and pnpm (the pinned version in `package.json` is
 
 ```bash
 pnpm install     # tooling plus the Pi host packages used for types, docs, and examples
-pnpm check       # lint + typecheck + tests
+pnpm check       # lint + typecheck + tests, including loading every extension in Pi
 pnpm lint:fix    # apply formatting and safe lint fixes
 ```
 

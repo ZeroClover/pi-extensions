@@ -1,5 +1,6 @@
 # Quality checks for every pull request and every default-branch push.
-# The release-impact gate runs on pull requests only (docs/releases.md).
+# The release-impact gate and the artifact preflight of added release records
+# run on pull requests only (docs/releases.md).
 name: CI
 
 on:
@@ -38,3 +39,8 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: node tools/release/src/cli.ts coverage --base "$BASE_SHA" --head "$HEAD_SHA"
+      - name: Release artifact preflight
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node tools/release/src/cli.ts preflight --base "$BASE_SHA" --head HEAD --work-dir "$RUNNER_TEMP/preflight"

@@ -4,5 +4,5 @@ context: |
   Scope: the pi-retry extension in this directory only. Repository-wide
   concerns belong to the repository root's openspec/.
   Constraints: follow ../../AGENTS.md and ../../docs/conventions.md.
-  Verification for every change: pnpm check from the repository root and
-  the load smoke test in ../../docs/workflow.md.
+  Verification for every change: pnpm check from the repository root (it
+  loads the extension in Pi) and the live checks in ../../docs/workflow.md.

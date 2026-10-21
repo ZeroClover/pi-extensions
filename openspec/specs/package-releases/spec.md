@@ -143,6 +143,18 @@ Publication SHALL complete quality, notes, and actual tarball/load preflight for
 - **WHEN** the selected tarball includes its source entry, resources, changelog, and runtime dependency declarations and passes isolated loading
 - **THEN** that validated artifact can be published without a build/dist requirement
 
+### Requirement: Preflight preparation artifacts before merge
+
+Pull request validation SHALL run the same read-only tarball/load preflight as publication for the release records a pull request adds, relative to its merge base. A pull request without new release records SHALL pass it as a no-op.
+
+#### Scenario: A broken artifact in a preparation pull request
+- **WHEN** a preparation pull request adds a release record whose packed tarball misses a declared resource or fails to load in isolation
+- **THEN** the pull request's CI fails before merge, so no release record reaches the default branch and no withdrawal is needed
+
+#### Scenario: A pull request without release records
+- **WHEN** a pull request adds no release records
+- **THEN** the artifact preflight reports a no-op and passes without packing anything
+
 ### Requirement: Retry the original batch without new version decisions
 
 A retry SHALL use the original prepared batch and commit, skip uploading exact versions already on the registry, and create missing announcements from the committed notes. Only genuine not-found responses SHALL count as absence; other lookup failures SHALL stop execution. Retries MUST NOT bump versions, force-overwrite packages, or silently edit existing release prose.
