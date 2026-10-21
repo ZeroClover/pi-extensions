@@ -36,7 +36,6 @@ The readout occupies one line in Pi's footer. It tracks a **run**: everything Pi
 
 A spinner (`⠋⠙⠹…`) at the start of the line means a run is active; `✓` or `✗` means the last run has finished. With the current model averaging 52.3 tok/s and 1.1 s TTFT, the line goes through states like these:
 
-<!-- example-lines: test/format.test.ts checks that pi-tps prints each of these lines exactly -->
 ```text
 ⠋ - TPS | TTFT 1.4s
 ⠹ - (x̄52.3) TPS | TTFT 2.0s (x̄1.1s) | 2➤
@@ -146,7 +145,7 @@ Read from `~/.pi/agent/pi-tps.json` (Pi's agent directory, `getAgentDir()`) at s
 
 **Removed keys:** `labels`, `summaryMode`, top-level `thresholds`, and array-valued overrides from earlier releases each produce one warning and are ignored. To keep the old TPS colouring, move `thresholds` to `tps.absolute` with `"tps": { "mode": "absolute" }`, and rewrite `"key": [...]` overrides as `"key": { "tps": { "mode": "absolute", "absolute": [...] } }`.
 
-<!-- example-config: test/config.test.ts loads this block and expects no warnings -->
+<!-- example-config: test/config.test.ts starts Pi with this block as pi-tps.json and expects no warnings -->
 ```json
 {
 	"separator": " · ",

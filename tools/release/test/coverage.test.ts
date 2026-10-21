@@ -1,140 +1,74 @@
-import { describe, expect, it } from "vitest";
-import { type CoverageInput, evaluateCoverage } from "../src/coverage.ts";
-import { intent, manifest } from "./fixtures.ts";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { RegistryDouble } from "./registry.ts";
+import { A, seed, TestRepo } from "./repo.ts";
 
-const A = "@zeroclover/pi-a";
-const B = "@zeroclover/pi-b";
+let registry: RegistryDouble;
+let repo: TestRepo;
+let base: string;
 
-function input(overrides: Partial<CoverageInput>): CoverageInput {
-	return {
-		changedPaths: [],
-		plugins: [
-			{ dirName: "pi-a", manifest: manifest("pi-a", "0.1.0") },
-			{ dirName: "pi-b", manifest: manifest("pi-b", "1.0.0") },
-		],
-		baseIntents: new Map(),
-		headIntents: new Map(),
-		prepared: new Set(),
-		withdrawn: new Map(),
-		consumed: new Map(),
-		...overrides,
-	};
+beforeAll(async () => {
+	registry = await RegistryDouble.start();
+});
+
+afterAll(async () => {
+	await registry.close();
+});
+
+beforeEach(async () => {
+	registry.reset();
+	repo = await TestRepo.create(registry);
+	base = await seed(repo);
+	await repo.git("checkout", "-q", "-b", "feature");
+});
+
+afterEach(async () => {
+	await repo.cleanup();
+});
+
+function coverage() {
+	return repo.cli("coverage", "--base", base, "--head", "HEAD");
 }
 
-function decisions(overrides: Partial<CoverageInput>): Record<string, string | undefined> {
-	return Object.fromEntries(evaluateCoverage(input(overrides)).map((plugin) => [plugin.name, plugin.decision]));
-}
+describe("cli.ts coverage, the pull request release-impact gate", () => {
+	// package-releases: PRs declare their own release impact.
+	it("fails a plugin change without a release decision and passes once pnpm change records one", async () => {
+		await repo.commit("feat(pi-a): change", { "packages/pi-a/src/index.ts": "export default function () {}\n" });
+		const missing = await coverage();
+		expect(missing.code).toBe(1);
+		expect(missing.stdout).toMatch(/error: @zeroclover\/pi-a: published files changed .* no release decision/);
 
-describe("evaluateCoverage", () => {
-	it("requires a decision for changed source, manifests, and declared resources", () => {
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-a/src/index.ts", "packages/pi-b/package.json", "packages/pi-b/README.md"],
-			}),
-		).toEqual({ [A]: undefined, [B]: undefined });
+		await repo.change("patch", "Fix the greeting", A);
+		const decided = await coverage();
+		expect([decided.code, decided.stdout]).toEqual([0, expect.stringMatching(/@zeroclover\/pi-a: patch release/)]);
 	});
 
-	it("ignores tests, OpenSpec, root tooling, and repository documentation", () => {
-		expect(
-			decisions({
-				changedPaths: [
-					"packages/pi-a/test/index.test.ts",
-					"packages/pi-a/openspec/specs/x/spec.md",
-					"tools/release/src/cli.ts",
-					"docs/releases.md",
-					"package.json",
-				],
-			}),
-		).toEqual({});
+	// package-releases: PRs declare their own release impact.
+	it("accepts a reasoned none decision as the plugin's release decision", async () => {
+		await repo.commit("refactor(pi-a): rename", { "packages/pi-a/src/index.ts": "export default function () {}\n" });
+		await repo.change("none", "Internal rename; no user-facing change", A);
+		const result = await coverage();
+		expect([result.code, result.stdout]).toEqual([0, expect.stringMatching(/@zeroclover\/pi-a: no release/)]);
 	});
 
-	it("accepts a new positive intent", () => {
-		const added = intent("calm-cats", { [A]: "minor" }, "Adds /a");
-		expect(
-			decisions({ changedPaths: ["packages/pi-a/src/a.ts"], headIntents: new Map([["calm-cats", added]]) }),
-		).toEqual({
-			[A]: "minor release (.changeset/calm-cats.md)",
+	// package-releases: PRs declare their own release impact.
+	it("does not demand a decision for changes that are never published", async () => {
+		await repo.commit("test(pi-a): scenario", {
+			"packages/pi-a/test/a.test.ts": "export {};\n",
+			"packages/pi-a/openspec/specs/a/spec.md": "# Spec\n",
 		});
+		const result = await coverage();
+		expect(result.code, result.output).toBe(0);
+		expect(result.stdout).not.toMatch(/error:/);
 	});
 
-	it("does not let an unchanged pending intent from the base branch cover a new change", () => {
-		const stale = intent("old", { [A]: "minor" }, "Older feature");
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-a/src/a.ts"],
-				baseIntents: new Map([["old", stale]]),
-				headIntents: new Map([["old", stale]]),
-			}),
-		).toEqual({ [A]: undefined });
-	});
-
-	it("counts a meaningfully updated intent", () => {
-		const before = intent("old", { [A]: "patch" }, "Fix");
-		const after = intent("old", { [A]: "patch" }, "Fix, and also handle empty input");
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-a/src/a.ts"],
-				baseIntents: new Map([["old", before]]),
-				headIntents: new Map([["old", after]]),
-			})[A],
-		).toBe("patch release (.changeset/old.md)");
-	});
-
-	it("accepts a reasoned none declaration but not one without a reason", () => {
-		const reasoned = intent("docs", { [A]: "none" }, "README wording only");
-		const bare = intent("bare", { [B]: "none" }, "");
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-a/README.md", "packages/pi-b/README.md"],
-				headIntents: new Map([
-					["docs", reasoned],
-					["bare", bare],
-				]),
-			}),
-		).toEqual({ [A]: "no release (.changeset/docs.md)", [B]: undefined });
-	});
-
-	it("accepts prepared records for preparation-only changes whose intents were consumed", () => {
-		expect(
-			decisions({
-				changedPaths: [
-					"packages/pi-a/package.json",
-					"packages/pi-a/CHANGELOG.md",
-					".changeset/ledger.yaml",
-					".changeset/old.md",
-				],
-				baseIntents: new Map([["old", intent("old", { [A]: "patch" }, "Fix")]]),
-				prepared: new Set([A]),
-			}),
-		).toEqual({ [A]: "prepared release record" });
-	});
-
-	it("does not count a shared intent that the plugin has already consumed", () => {
-		const before = intent("shared", { [A]: "patch", [B]: "patch" }, "Shared fix");
-		const after = intent("shared", { [A]: "patch", [B]: "patch" }, "Shared fix, reworded for A");
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-a/src/a.ts", "packages/pi-b/src/b.ts", ".changeset/shared.md"],
-				baseIntents: new Map([["shared", before]]),
-				headIntents: new Map([["shared", after]]),
-				consumed: new Map([[B, new Set(["shared"])]]),
-			}),
-		).toEqual({ [A]: "patch release (.changeset/shared.md)", [B]: undefined });
-	});
-
-	it("accepts a validated withdrawal for the reverted release files", () => {
-		expect(
-			decisions({
-				changedPaths: ["packages/pi-b/package.json", "packages/pi-b/CHANGELOG.md", ".changeset/ledger.yaml"],
-				withdrawn: new Map([[B, `${B}@1.0.1`]]),
-			}),
-		).toEqual({ [B]: `withdrawal of ${B}@1.0.1` });
-	});
-
-	it("accepts a ./ directory reference", () => {
-		const byDir = intent("dir", { "./packages/pi-a": "patch" }, "Fix");
-		expect(decisions({ changedPaths: ["packages/pi-a/src/a.ts"], headIntents: new Map([["dir", byDir]]) })[A]).toBe(
-			"patch release (.changeset/dir.md)",
-		);
+	// package-releases: Default-branch publication uses the prepared records (versions change only by preparation).
+	it("fails a version edited by hand outside a release preparation", async () => {
+		await repo.commit("chore(pi-a): bump", {
+			...repo.plugin("pi-a", { version: "0.2.0" }),
+		});
+		await repo.change("minor", "A feature", A);
+		const result = await coverage();
+		expect(result.code).toBe(1);
+		expect(result.stdout).toMatch(/pi-a\/package.json: version 0.1.0 -> 0.2.0 without a release record/);
 	});
 });

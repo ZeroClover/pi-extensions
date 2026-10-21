@@ -118,7 +118,7 @@ export default function (pi: ExtensionAPI): void {
 }
 ```
 
-### `packages/<name>/src/greeting.ts` and `test/greeting.test.ts`
+### `packages/<name>/src/greeting.ts`
 
 ```ts
 export function greeting(name: string): string {
@@ -126,13 +126,39 @@ export function greeting(name: string): string {
 }
 ```
 
-```ts
-import { describe, expect, it } from "vitest";
-import { greeting } from "../src/greeting.ts";
+### `packages/<name>/test/hello.test.ts`
 
-describe("greeting", () => {
-	it("greets by name", () => {
-		expect(greeting("Pi")).toBe("Hello, Pi!");
+The test loads the package into a real Pi session (`tools/e2e/src/`), lets a scripted model call the tool, and runs the command as a user would (`docs/conventions.md`, "Tests"). Replace the spec anchors once the package has specs.
+
+```ts
+import { afterEach, describe, expect, it } from "vitest";
+import { type Pi, reply, startPi, text, toolCall } from "../../../tools/e2e/src/index.ts";
+
+let pi: Pi | undefined;
+
+afterEach(async () => {
+	await pi?.dispose();
+	pi = undefined;
+});
+
+describe("hello", () => {
+	// greeting: Hello tool.
+	it("answers the model's hello call with a greeting", async () => {
+		pi = await startPi({ extensions: ["pi-<name>"] });
+		pi.provider.respond(reply(toolCall("hello", { name: "Pi" })), reply(text("done")));
+		await pi.prompt("greet Pi");
+		expect(pi.toolResults()).toEqual(["Hello, Pi!"]);
+	});
+
+	// greeting: Hello command.
+	it("shows a greeting for /hello, and greets the world without a name", async () => {
+		pi = await startPi({ extensions: ["pi-<name>"] });
+		await pi.prompt("/hello Ada");
+		await pi.prompt("/hello");
+		expect(pi.ui.notices).toEqual([
+			{ level: "info", message: "Hello, Ada!" },
+			{ level: "info", message: "Hello, world!" },
+		]);
 	});
 });
 ```
@@ -168,13 +194,13 @@ pi install /absolute/path/to/packages/<name>  # install a repository checkout fo
 
 Every source change ends with these, run from the repository root:
 
-1. `pnpm check`: Biome, `tsc`, and Vitest must all pass with no warnings you introduced. Vitest also loads every package in Pi without a model call (`tools/release/test/load.test.ts`), so a package that fails to load fails `pnpm check`. To see one package's load result or its commands directly:
+1. `pnpm check`: Biome, `tsc`, and Vitest must all pass with no warnings you introduced. Vitest runs every package's end-to-end scenarios, each in a real Pi session with a scripted provider (`tools/e2e/`), the release tooling's CLI scenarios, and loads every package in Pi without a model call (`tools/release/test/load.test.ts`), so a package that fails to load fails `pnpm check`. Run one package's scenarios with `pnpm vitest run packages/<name>`. To see one package's load result or its commands directly:
 
    ```bash
    printf '{"id":"1","type":"get_commands"}\n' | pi -ne -e ./packages/<name> --mode rpc
    ```
 
-2. For behavior that needs a live session (tools the model calls, UI, events), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
+2. For behavior the end-to-end scenarios cannot reach (a real model, a real terminal, a third-party extension), run `pi -ne -e ./packages/<name>` interactively or with `--print` and exercise the feature. State in the final report exactly what was exercised.
 
 CI repeats `pnpm check` on the pull request and also runs `pnpm change check`, the release-impact gate, and the artifact preflight (`docs/releases.md`); there is no need to run those locally. To debug a failing gate, run it on the committed branch: `node tools/release/src/cli.ts coverage --base origin/master --head HEAD`.
 
@@ -186,7 +212,7 @@ A running Pi session keeps the extension code it loaded at startup. After editin
 
 1. Read the package README, `openspec/specs/`, and `src/index.ts` first, then the modules you touch.
 2. For non-trivial changes, propose from `packages/<name>/` and wait for review.
-3. Make the change with its test. Keep the package's public surface (tool names, command names, settings) stable unless the change is the point.
+3. Make the change with its end-to-end scenario; a bug fix adds one that fails before the fix (`docs/conventions.md`, "Tests"). Keep the package's public surface (tool names, command names, settings) stable unless the change is the point.
 4. Update the README when tools, commands, flags, or configuration change.
 5. Record the release decision with `pnpm change` (`docs/releases.md`): the bump the user-facing change warrants, or `none` with a reason.
 6. Verify, archive the change, then commit as `fix(pi-<name>): ...` or `feat(pi-<name>): ...`.

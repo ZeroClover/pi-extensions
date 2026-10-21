@@ -12,6 +12,7 @@
 ├── .changeset/                    release intents (<id>.md) and ledger (ledger.yaml), written by pnpm
 ├── .github/workflows/             ci.yml (checks, release-impact gate, artifact preflight) and release.yml (publication)
 ├── tools/
+│   ├── e2e/                       end-to-end harness: a real Pi session with a scripted provider and recording UI
 │   └── release/                   release checks and publication tooling: src/ and test/
 ├── .agents/skills/
 │   ├── pi-extension-dev/SKILL.md  skill loaded when working on an extension
@@ -24,7 +25,7 @@
 ├── tsconfig.base.json             shared strict compiler options
 ├── tsconfig.json                  typecheck entry covering packages/*/{src,test} and tools/*/{src,test}
 ├── biome.json                     lint and format rules
-└── vitest.config.ts               test discovery (packages/*/test and tools/*/test)
+└── vitest.config.ts               test discovery (packages/*/test and tools/*/test), one process per file, timeouts
 ```
 
 Agent-facing files follow one rule: `AGENTS.md` and `.agents/` are the shared, harness-neutral surface; `.claude/` is the only harness-specific directory, and `CLAUDE.md` contains nothing but `@AGENTS.md`. No other harness gets its own files.
@@ -42,14 +43,14 @@ packages/<name>/
 │   ├── index.ts        extension entry: default export function (pi: ExtensionAPI)
 │   └── *.ts            implementation modules, kept free of Pi API where possible
 ├── test/
-│   └── *.test.ts       Vitest tests for the implementation modules
+│   └── *.test.ts       end-to-end scenarios through a real Pi session (tools/e2e), with package fixtures
 └── openspec/           the package's own OpenSpec root: specs/ and changes/
 ```
 
 Rules that follow from this layout:
 
-- `src/index.ts` is the only file Pi loads. It wires registrations (`pi.registerTool`, `pi.registerCommand`, `pi.on`, ...) to implementation modules. Keep it thin so the logic is testable without a running Pi.
-- Logic that does not need `ExtensionAPI` or `ExtensionContext` lives in separate modules under `src/` and gets unit tests under `test/`.
+- `src/index.ts` is the only file Pi loads. It wires registrations (`pi.registerTool`, `pi.registerCommand`, `pi.on`, ...) to implementation modules. Keep it thin so the wiring reads at a glance.
+- Logic that does not need `ExtensionAPI` or `ExtensionContext` lives in separate modules under `src/`. Tests do not import them; they drive the extension through a Pi session (`docs/conventions.md`, "Tests").
 - Relative imports use the `.ts` extension (`import { x } from "./x.ts"`). Pi loads sources through jiti and the compiler is configured with `allowImportingTsExtensions`.
 - A package may contain skills, prompt templates, or themes next to its extension; declare them in the `pi` manifest.
 - `openspec/` holds the package's specifications and change proposals. It is excluded from the published `files` and from the `pi` manifest; the OpenSpec CLI finds it as the nearest root when run from the package directory.

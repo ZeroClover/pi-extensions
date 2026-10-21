@@ -1,28 +1,45 @@
 import { spawnSync } from "node:child_process";
-import { describe, expect, it } from "vitest";
-import { RTK_BIN, TIMEOUT_MS } from "../src/controller.ts";
-import { interpretRewrite } from "../src/outcome.ts";
-import { runFile } from "../src/run.ts";
+import { afterEach, describe, expect, it } from "vitest";
+import { type Pi, reply, startPi, text, toolCall } from "../../../tools/e2e/src/index.ts";
+import { type StubCall, stubTools } from "./fixtures.ts";
 
-// Checks the exit-code contract against the rtk on PATH; skipped where rtk is not installed (CI).
-const hasRtk = spawnSync(RTK_BIN, ["--version"]).status === 0;
-
-async function rewrite(command: string) {
-	return interpretRewrite(command, await runFile(RTK_BIN, ["rewrite", "--", command], { timeoutMs: TIMEOUT_MS }));
+/** The real rtk on `PATH`, when it is new enough to have `rtk rewrite` (0.25.0); CI runners do not install it. */
+function realRtk(): { version: string } | { missing: string } {
+	const result = spawnSync("rtk", ["--version"], { encoding: "utf8" });
+	if (result.status !== 0) return { missing: "rtk is not on PATH" };
+	const match = /(\d+)\.(\d+)\.(\d+)/.exec(result.stdout);
+	if (!match) return { missing: `rtk --version printed no version: ${result.stdout.trim()}` };
+	const [major, minor] = [Number(match[1]), Number(match[2])];
+	if (major === 0 && minor < 25) return { missing: `rtk ${match[0]} is older than 0.25.0` };
+	return { version: match[0] };
 }
 
-describe.skipIf(!hasRtk)("rtk rewrite contract", () => {
-	it("rewrites a supported command", async () => {
-		expect(await rewrite("git status")).toEqual({ kind: "rewrite", command: "rtk git status" });
-	});
+const rtk = realRtk();
+const title =
+	"version" in rtk
+		? `contract with the installed rtk ${rtk.version}`
+		: `contract with the real rtk (skipped: ${rtk.missing})`;
 
-	it("leaves unsupported and already rewritten commands unchanged", async () => {
-		expect(await rewrite("vim notes.txt")).toEqual({ kind: "unchanged" });
-		expect(await rewrite("rtk git status")).toEqual({ kind: "unchanged" });
-	});
+let pi: Pi | undefined;
 
-	it("does not read a command that looks like an option as an rtk option", async () => {
-		expect(await rewrite("-h")).toEqual({ kind: "unchanged" });
-		expect(await rewrite("--help")).toEqual({ kind: "unchanged" });
+afterEach(async () => {
+	await pi?.dispose();
+	pi = undefined;
+});
+
+describe.skipIf(!("version" in rtk))(title, () => {
+	// command-rewriting: Exit-code contract, Rewrite before execution ("Command that looks like an option").
+	it("rewrites what rtk supports and leaves editors, option-like commands, and rtk commands as the model wrote them", async () => {
+		const calls: StubCall[] = [];
+		pi = await startPi({ extensions: ["pi-rtk"], tools: ["exec_command"], customTools: stubTools(calls) });
+		const runs = async (cmd: string): Promise<unknown> => {
+			pi?.provider.respond(reply(toolCall("exec_command", { cmd })), reply(text("ok")));
+			await pi?.prompt(`run ${cmd}`);
+			const { cmd: ran } = calls.at(-1)?.input ?? {};
+			return ran;
+		};
+
+		expect(await runs("git status")).toBe("rtk git status");
+		for (const cmd of ["vim notes.txt", "-h", "--help", "rtk git status"]) expect(await runs(cmd)).toBe(cmd);
 	});
 });
