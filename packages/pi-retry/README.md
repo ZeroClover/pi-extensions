@@ -106,9 +106,9 @@ A missing file uses the defaults. Invalid JSON, unknown keys, out-of-range value
 | `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT, OpenCode), `available balance` |
 | `auth` | no | HTTP 401/403, `authentication_error`, `permission_error`, `invalid_api_key`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `AccessDeniedException` |
 | `not_found` | no | HTTP 404, `not_found_error`, `model_not_found`, `NOT_FOUND`, `ResourceNotFoundException` |
-| `invalid_request` | no | HTTP 400/413/422, `invalid_request_error`, `INVALID_ARGUMENT`, `ValidationException`, `BadRequestError` |
+| `invalid_request` | no | HTTP 400/422, HTTP 413 unless Pi's overflow patterns match it, `invalid_request_error`, `INVALID_ARGUMENT`, `ValidationException`, `BadRequestError` |
 | `content_policy` | no | `content_policy_violation`, `content_filter` |
-| `context_overflow` | no | Pi's overflow patterns (`prompt is too long`, `exceeds the context window`, …), `context_length_exceeded`, `ContextWindowExceededError`, `request_too_large` (handled by Pi's compaction) |
+| `context_overflow` | no | Pi's overflow patterns (`prompt is too long`, `exceeds the context window`, an error text starting with `413` or `<provider> API error (413):` since Pi 1.4, …), `context_length_exceeded`, `ContextWindowExceededError`, `request_too_large` (handled by Pi's compaction) |
 
 Classification follows these precedence rules:
 
