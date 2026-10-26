@@ -7,6 +7,7 @@ Extensions for [Pi](https://pi.dev), the terminal coding agent. Each extension i
 | [`pi-retry`](packages/pi-retry/) | `@zeroclover/pi-retry` | Retries failed model requests, honouring the wait the provider asks for or backing off exponentially |
 | [`pi-rtk`](packages/pi-rtk/) | `@zeroclover/pi-rtk` | Routes shell commands from Pi's bash and third-party exec tools through RTK for compact, token-efficient output |
 | [`pi-tps`](packages/pi-tps/) | `@zeroclover/pi-tps` | Footer readout showing live tokens per second and time to first token alongside each model's smoothed averages and session totals |
+| [`pi-web-access`](packages/pi-web-access/) | `@zeroclover/pi-web-access` | web_search and web_fetch tools routed over Sub2API, DeepSeek and Exa providers with priority, fallback, site rules and per-call override |
 
 ## Using an extension
 
