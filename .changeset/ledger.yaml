@@ -26,3 +26,7 @@
   dir: packages/pi-tps
   intents:
     - tame-kids-fail
+"@zeroclover/pi-web-access@0.1.0":
+  dir: packages/pi-web-access
+  intents:
+    - spicy-goats-open
