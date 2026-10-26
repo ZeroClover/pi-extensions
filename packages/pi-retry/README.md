@@ -1,6 +1,6 @@
 # pi-retry
 
-Automatic retry for failed model requests in Pi. Pi's built-in retry matches errors with a single regular expression, waits at most 60 s, and ignores the wait time a provider asks for. As a result, a 429 asking to wait 90 s fails after three quick retries, and unrecognised transient errors are never retried. pi-retry steps in once Pi gives up, classifying the error and waiting as long as the provider asks.
+Automatic retry for failed model requests in Pi. Pi's built-in retry decides by wording alone: after its overflow check, it checks a deny list before an allow list. Its waits are capped by `retry.maxAgentDelayMs` (60 s by default), and only its provider-level retry honours `retry-after`. As a result, a 429 asking to wait 90 s fails after three quick retries, and unrecognised transient errors are never retried. pi-retry steps in once Pi gives up, classifying the error and waiting as long as the provider asks.
 
 - Classifies errors by category and stops immediately on deterministic failures (auth, invalid request, context overflow, …).
 - Honours provider-requested waits from headers, diagnostics, or error text up to a configurable limit, and backs off exponentially with jitter otherwise.
@@ -97,13 +97,13 @@ A missing file uses the defaults. Invalid JSON, unknown keys, out-of-range value
 
 | Category | Retried | Examples |
 |---|---|---|
-| `rate_limit` | yes | HTTP 409/429, `rate_limit_error`, `rate_limit_exceeded`, `Too many requests`, `ThrottlingException`, `RESOURCE_EXHAUSTED`, Google's per-minute `Quota exceeded for quota metric …`, LiteLLM `No healthy deployment available` |
+| `rate_limit` | yes | HTTP 409/429, `rate_limit_error`, `rate_limit_exceeded`, `Too many requests`, `ThrottlingException`, `RESOURCE_EXHAUSTED`, Google's per-minute `Quota exceeded for quota metric …`, LiteLLM `No healthy deployment available`, Pi's Codex `You have hit your ChatGPT usage limit.` without a reset time or with `Try again in ~0 min.` |
 | `overloaded` | yes | HTTP 529, `overloaded_error`, `The model is overloaded`, `model is at capacity`, `server_busy`, `high demand` |
-| `server_error` | yes | other 5xx, `api_error`, `server_error`, `Internal server error`, `UNAVAILABLE`, `ServiceUnavailableException`, `Provider returned error`, `you can retry your request` |
+| `server_error` | yes | other 5xx, `api_error`, `server_error`, `Internal server error`, `UNAVAILABLE`, `ServiceUnavailableException`, `Provider returned error`, `upstream_request_failed`, `upstream_stream_read_error`, `you can retry your request` |
 | `timeout` | yes | HTTP 408/504/524, `timed out`, `timeout`, `DEADLINE_EXCEEDED`, `ModelTimeoutException` |
-| `transport` | yes | `fetch failed`, `ECONNRESET`, `ENOTFOUND`, `socket hang up`, `other side closed`, `terminated`, `stream ended before …`, `websocket closed`, `APIConnectionError` |
+| `transport` | yes | `fetch failed`, `ECONNRESET`, `ENOTFOUND`, `socket hang up`, `other side closed`, `terminated`, `stream ended before …`, `stream disconnected before completion`, `stream was interrupted`, `HTTP/2 stream failed`, `request to <url> failed, reason:`, `websocket closed`, `APIConnectionError` |
 | `unknown` | yes | anything that matches no rule; treated as transient and retried with backoff |
-| `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT, OpenCode), `available balance` |
+| `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT's message with `Try again in ~N min.`, OpenCode), `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `available balance` |
 | `auth` | no | HTTP 401/403, `authentication_error`, `permission_error`, `invalid_api_key`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `AccessDeniedException` |
 | `not_found` | no | HTTP 404, `not_found_error`, `model_not_found`, `NOT_FOUND`, `ResourceNotFoundException` |
 | `invalid_request` | no | HTTP 400/422, HTTP 413 unless Pi's overflow patterns match it, `invalid_request_error`, `INVALID_ARGUMENT`, `ValidationException`, `BadRequestError` |
@@ -114,10 +114,11 @@ Classification follows these precedence rules:
 
 1. User `patterns` are checked first (see [Configuration](#configuration)).
 2. `context_overflow` is never matched on HTTP 429 or 529, or when rate-limit or overload wording is present (throttling messages often mention "too many tokens").
-3. Deterministic wording beats transient wording, except that HTTP 408, 409, 429, or 5xx overrides `invalid_request` wording (OpenAI 429 bodies carry `invalid_request_error`).
-4. Specific statuses (every status named in the table above, as opposed to a generic 5xx) beat transient wording, so a 400 that echoes "rate limit" stays `invalid_request`.
-5. Transient wording beats a generic 5xx, so `503 The model is overloaded` is classified as `overloaded`.
-6. A 5xx whose body contains `"code": 429` or `RESOURCE_EXHAUSTED` is treated as HTTP 429.
+3. Deterministic wording beats transient wording, with two exceptions: HTTP 408, 409, 429, or 5xx overrides `invalid_request` wording (OpenAI 429 bodies carry `invalid_request_error`), and Pi's Codex usage-limit message without a usable reset time is `rate_limit` (Pi renders it for every Codex 429 with a JSON error body, transient rate limits included, and for any status whose error `code`, or `type` when `code` is absent, contains `usage_limit_reached`, `usage_not_included`, or `rate_limit_exceeded`).
+4. Quota wording beats invalid-request wording, so Anthropic's low-credit error (`invalid_request_error … credit balance is too low … Plans & Billing`) is `quota`.
+5. Specific statuses (every status named in the table above, as opposed to a generic 5xx) beat transient wording, so a 400 that echoes "rate limit" stays `invalid_request`. The Codex message in rule 3 is the exception: it is `rate_limit` whatever the status.
+6. Transient wording beats a generic 5xx, so `503 The model is overloaded` is classified as `overloaded`.
+7. A 5xx whose body contains `"code": 429` or `RESOURCE_EXHAUSTED` is treated as HTTP 429.
 
 The HTTP status is read from the captured response, from diagnostics (`details.status`), or from the error text (matched only at the start of the string or after `status`, `HTTP`, `code`, or `(`, so token counts, ports, and timestamps are ignored). Diagnostic codes omitted from the error text (`details.errorCode`, `details.error.code`, `details.error.type`, `error.code`) are also matched. Every decision records a reason naming its evidence, such as `auth: HTTP 401` or `rate_limit: HTTP 429; provider asked to wait 20s (header retry-after)`.
 
@@ -127,7 +128,7 @@ A wait hint is read from the first source that provides one:
 
 1. **Response headers** (when attributable; see below): `retry-after-ms` and `retry-after` (seconds or HTTP-date) on any error status; on HTTP 429 also `x-ratelimit-reset-requests`, `x-ratelimit-reset-tokens` (OpenAI durations such as `6m0s`), `anthropic-ratelimit-*-reset` (the latest timestamp wins), `x-ratelimit-reset`, and `ratelimit-reset` (seconds or epoch).
 2. **Diagnostics**: `retryAfterMs`, `retryAfter`, or `retryDelay` in a diagnostic's `details`.
-3. **Error text**: OpenAI `try again in 1.2s` / `6m0s` / `250ms`, Pi's Codex message `Try again in ~12 min.` (`~0 min` is ignored), Google `"retryDelay": "28s"`, Pi's `Server requested 90s retry delay`, `retry after 30 seconds`, `retry-after: 30`, `resets in 5 minutes`, `resets at <ISO 8601 or epoch>`, and `"resets_at": <epoch>`.
+3. **Error text**: OpenAI `try again in 1.2s` / `6m0s` / `250ms`, Pi's Codex message `Try again in ~12 min.` (`~0 min` is retried with backoff), Google `"retryDelay": "28s"`, Pi's `Server requested 90s retry delay`, `retry after 30 seconds`, `retry-after: 30`, `resets in 5 minutes`, `resets at <ISO 8601 or epoch>`, and `"resets_at": <epoch>`.
 
 Past timestamps, zero, and unparsable values are ignored. A hint up to `maxRetryAfterMs` (default 30 minutes) is waited in full, plus 250 ms, without jitter or backoff cap. A longer hint makes the failure non-retryable, regardless of category or user patterns, with the reason `provider asked to wait <duration>, limit is <duration>`.
 
@@ -137,19 +138,20 @@ Pi's `after_provider_response` event does not identify which request a response 
 
 | Adapter | Error-response headers |
 |---|---|
-| Mistral, pi-messages, OpenAI Codex over SSE (not the default WebSocket path), custom providers following the `streamSimple` contract | delivered |
-| Anthropic, OpenAI Completions, OpenAI Responses, Azure Responses, Bedrock | not delivered: the SDK throws first |
-| Google Generative AI, Google Vertex, Gemini CLI | never delivered |
+| Mistral, pi-messages, OpenAI Codex requests served over SSE (the `sse` transport, or `auto` after a WebSocket fallback), custom providers following the `streamSimple` contract | delivered |
+| Bedrock | delivered once per AWS SDK attempt; never used, because the gate excludes the adapter |
+| Anthropic, OpenAI Completions, OpenAI Responses, Azure Responses | not delivered: the SDK throws first |
+| Google Generative AI, Google Vertex | never delivered |
 
 Because of this, pi-retry uses header hints only when a single request is guaranteed to produce at most one response event:
 
-- Pi's `cacheWarming` is `off` and no warming request has run in the session, because warming requests share the response event. Pi reads `cacheWarming` from the global `settings.json` only; a project-level setting can make `/retry` report `on` until the first warming request turns header hints off.
-- `retry.provider.maxRetries` is `0` or unset (no SDK retries inside a single request).
-- The failed message's adapter is not `openai-codex-responses` (which retries internally).
+- Pi's `cacheWarming` is `off` and no cache-warming decision has occurred in the session, because warming requests share the response event (Pi also reports a decision not to warm). Pi reads `cacheWarming` from the global `settings.json` only; a project-level setting can make `/retry` report `on` until the first warming decision turns header hints off.
+- `retry.provider.maxRetries` is `0` or unset (no provider-level retries inside a single request; the AWS SDK's own retries are covered by the next rule).
+- The failed message's adapter is not `bedrock-converse-stream`. The AWS SDK retries throttles and transient failures (every 429, and 500, 502, 503, 504) inside one request whatever `retry.provider.maxRetries` says, so excluding the adapter keeps one Bedrock throttle from turning header hints off for the session. The cost: a Bedrock failure the SDK does not retry, such as a 408 `ModelTimeoutException`, a 409, or a 501, loses its header hint and falls back to diagnostics, error text, or backoff.
 
-Only an error response received between the request's start and end is used; a second response during one request disables header hints for the rest of the session. `/retry` reports `headerHints: on` or `headerHints: off (<reason>)`, including the adapter rule for the selected model. With Pi's default `cacheWarming: streaming`, header hints are off, and pi-retry falls back to diagnostics and error text (OpenAI and Google include waits in error text, Codex includes usage-limit resets, and Anthropic 429s use exponential backoff).
+Only an error response received between the request's start and end is used; on any adapter other than Bedrock, a second response during one request disables header hints for the rest of the session. `/retry` reports `headerHints: on` or `headerHints: off (<reason>)`, including the adapter rule for the selected model. With Pi's default `cacheWarming: streaming`, header hints are off, and pi-retry falls back to diagnostics and error text (OpenAI and Google include waits in error text, Codex includes usage-limit resets, and Anthropic 429s use exponential backoff).
 
-**Optional header-to-text bridge (Anthropic, OpenAI Completions/Responses, Azure):** Pi's provider-level retry converts a `retry-after` header above its cap into the error message `Server requested <n>s retry delay (max: <m>s)` (seconds rounded up), which pi-retry parses from the text. Setting `"retry": { "enabled": false, "provider": { "maxRetries": 1, "maxRetryDelayMs": 1 } }` in Pi's `settings.json` surfaces every `retry-after` header as text (a requested 1.2 s becomes 2 s). The trade-off is one extra provider-level retry (after about 0.5 s) on retryable errors without a `retry-after` header, and event-based header hints are turned off because provider retries are non-zero (which affects only the adapters in the first row above).
+**Optional header-to-text bridge (Anthropic, OpenAI Completions/Responses, Azure, Codex over SSE):** Pi's provider-level retry converts a `retry-after` header above its cap into the error message `Server requested <n>s retry delay (max: <m>s)` (seconds rounded up), which pi-retry parses from the text. On Codex the message stands alone, without the provider's error after it, and it replaces the usage-limit text only on an HTTP error that Codex's adapter retries: a 429 without terminal quota or billing wording, a 500/502/503/504, or any status whose body matches `rate limit`, `overloaded`, `service unavailable`, `upstream connect`, or `connection refused`. Setting `"retry": { "enabled": false, "provider": { "maxRetries": 1, "maxRetryDelayMs": 1 } }` in Pi's `settings.json` surfaces every such `retry-after` header as text (a requested 1.2 s becomes 2 s). The trade-off is one extra provider-level retry (after 375–500 ms, or 1 s on Codex) on retryable errors without a `retry-after` header, and event-based header hints are turned off because provider retries are non-zero (which affects the adapters in the first row).
 
 ## Reporting
 

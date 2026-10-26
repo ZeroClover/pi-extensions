@@ -75,4 +75,47 @@ describe("provider-requested waits", () => {
 		expect(records(pi).at(-1)).toMatchObject({ hintSource: "header retry-after", delayMs: 1250 });
 		expect(gap(pi, 0)).toBeGreaterThanOrEqual(1250);
 	});
+
+	// retry-hints: Header capture gate ("Bedrock adapter").
+	it("keeps header hints on for the session after a Bedrock throttle the AWS SDK retried", async () => {
+		pi = await startRetry({ settings: { retry: { enabled: false }, cacheWarming: "off" } });
+		const throttle = { status: 429, headers: { "retry-after": "1" } };
+		pi.provider.respond(
+			failure("Throttling error: Too many requests, please wait before trying again.", {
+				...throttle,
+				priorResponses: [throttle],
+				api: "bedrock-converse-stream",
+			}),
+			reply(text("ok")),
+		);
+		await pi.prompt("bedrock throttle");
+		const bedrock = records(pi).at(-1);
+		expect(bedrock).not.toHaveProperty("hintSource");
+		expect(bedrock).toMatchObject({ delayMs: expect.toSatisfy((ms: number) => ms <= 100) });
+
+		pi.provider.respond(failure("429 Too Many Requests", throttle), reply(text("ok")));
+		await pi.prompt("header hint after bedrock");
+		expect(records(pi).at(-1)).toMatchObject({ hintSource: "header retry-after", delayMs: 1250 });
+	});
+
+	// retry-hints: Header capture gate ("Codex adapter"). error-classification: Provider vocabulary ("Codex usage limit
+	// without a reset time").
+	it("honours a retry-after header on a Codex 429 that Pi renders as a usage limit without a reset time", async () => {
+		pi = await startRetry({ settings: { retry: { enabled: false }, cacheWarming: "off" } });
+		pi.provider.respond(
+			failure("You have hit your ChatGPT usage limit.", {
+				status: 429,
+				headers: { "retry-after": "1" },
+				api: "openai-codex-responses",
+			}),
+			reply(text("ok")),
+		);
+		await pi.prompt("codex 429");
+		expect(records(pi).at(-1)).toMatchObject({
+			category: "rate_limit",
+			hintSource: "header retry-after",
+			delayMs: 1250,
+		});
+		expect(gap(pi, 0)).toBeGreaterThanOrEqual(1250);
+	});
 });

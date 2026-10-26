@@ -8,6 +8,7 @@ import {
 	type Message,
 	type Model,
 	type Provider,
+	type ProviderResponse,
 	type SimpleStreamOptions,
 	type TextContent,
 	type ThinkingContent,
@@ -40,11 +41,18 @@ export interface Response {
 	/** Status and headers passed to `onResponse`; 200 and no headers by default. */
 	status?: number | undefined;
 	headers?: Record<string, string> | undefined;
+	/**
+	 * Earlier responses passed to `onResponse`, in order, before `status` and `headers`, as an adapter's internal
+	 * retries report them (the AWS SDK's attempts, for example).
+	 */
+	priorResponses?: ProviderResponse[] | undefined;
 	/** Reported usage; `output` defaults to the streamed tokens and `input` to 0. */
 	usage?: Partial<Pick<Usage, "input" | "output" | "reasoning" | "cacheRead" | "cacheWrite">> | undefined;
 	/** The serving model the message names, when it differs from the requested one (a virtual model). */
 	model?: string | undefined;
 	responseModel?: string | undefined;
+	/** The adapter the message names, when it differs from the requested model's API (`scripted`). */
+	api?: string | undefined;
 	/** Ends the response with `stopReason: "error"` and this `errorMessage`, after the steps. */
 	error?: string | undefined;
 	/** Diagnostics a provider adapter attaches to a failed message, such as Bedrock's `details.errorCode`. */
@@ -96,12 +104,17 @@ export function reply(steps: Step | Step[], options: Omit<Response, "steps" | "e
 	return { ...options, steps: Array.isArray(steps) ? steps : [steps] };
 }
 
-/** A failed request: `onResponse` reports `status` and `headers`, then the stream ends with `message`. */
+/**
+ * A failed request: `onResponse` reports `priorResponses`, then `status` and `headers`, then the stream ends with
+ * `message`.
+ */
 export function failure(
 	message: string,
 	options: {
 		status?: number;
 		headers?: Record<string, string>;
+		priorResponses?: ProviderResponse[];
+		api?: string;
 		steps?: Step[];
 		diagnostics?: AssistantMessageDiagnostic[];
 	} = {},
@@ -110,6 +123,8 @@ export function failure(
 		steps: options.steps ?? [],
 		status: options.status,
 		headers: options.headers,
+		priorResponses: options.priorResponses,
+		api: options.api,
 		error: message,
 		diagnostics: options.diagnostics,
 	};
@@ -189,7 +204,7 @@ class Streamer {
 		this.partial = {
 			role: "assistant",
 			content: [],
-			api: requested.api,
+			api: response.api ?? requested.api,
 			provider: requested.provider,
 			model: response.model ?? requested.id,
 			...(response.responseModel === undefined ? {} : { responseModel: response.responseModel }),
@@ -388,6 +403,7 @@ export function createScriptedProvider(): ScriptedProvider {
 			const streamer = new Streamer(out, options?.signal, requested, response);
 			try {
 				await options?.onPayload?.({ model: requested.id, messages: context.messages }, requested);
+				for (const prior of response.priorResponses ?? []) await options?.onResponse?.(prior, requested);
 				await options?.onResponse?.({ status: response.status ?? 200, headers: response.headers ?? {} }, requested);
 				if (streamer.aborted) {
 					streamer.abort();

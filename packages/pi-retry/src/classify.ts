@@ -4,6 +4,7 @@ import { formatDuration } from "./format.ts";
 import { acceptHint, extractHint, type Hint } from "./hints.ts";
 import {
 	type Category,
+	CODEX_NO_RESET_RULE,
 	DETERMINISTIC_RULES,
 	isDeterministic,
 	isMappedStatus,
@@ -137,6 +138,10 @@ function categorise(message: AssistantMessage, text: string, status: number | un
 	// Pi's overflow patterns include `too many tokens`, which throttling messages also use.
 	if (!throttled && isContextOverflow(message))
 		return { category: "context_overflow", evidence: "Pi's overflow patterns" };
+
+	// Matched on the error text alone: diagnostic codes joined to `text` would break its anchor.
+	const codex = CODEX_NO_RESET_RULE.pattern.exec(message.errorMessage ?? "");
+	if (codex) return { category: CODEX_NO_RESET_RULE.category, evidence: codex[0] };
 
 	const isServerStatus = status !== undefined && status >= 500 && status <= 599;
 	const discardInvalidRequest =
