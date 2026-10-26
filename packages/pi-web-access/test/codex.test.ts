@@ -137,6 +137,27 @@ describe("sub2api-codex provider", () => {
 		]);
 	});
 
+	// sub2api-providers: Responses search results come from citations and sources, over a stream with CRLF line
+	// endings whose event separators fall across network chunks.
+	it("reads a CRLF event stream whose separators are split between chunks", async () => {
+		const events = [
+			{ type: "response.created", response: { status: "in_progress", output: [] } },
+			{ type: "response.output_item.done", item: webSearchCall(["https://go.dev/dl/"]) },
+			{ type: "response.output_item.done", item: message("Go 1.27.3") },
+			{ type: "response.completed", response: { status: "completed", output: [] } },
+		];
+		const stream = events.map((event) => `event: ${event.type}\r\ndata: ${JSON.stringify(event)}\r\n\r\n`).join("");
+		// Split every event separator before its last LF: one chunk ends in `\r\n\r`, the next starts with `\n`.
+		const chunks = stream
+			.split("\r\n\r\n")
+			.flatMap((part, index, all) => (index < all.length - 1 ? [`${part}\r\n\r`, "\n"] : [part]));
+		server.route(PATH, { chunks });
+		pi = await startCodex();
+		const result = await call(pi, "web_search", { query: "latest go" });
+		expect(get(result.structured, "attempts", 0, "outcome")).toBe("ok");
+		expect(get(result.structured, "answer")).toBe("Go 1.27.3");
+	});
+
 	// sub2api-providers: `sub2api-codex` fetches by opening the page inside `web_search`.
 	// web-fetch: The extraction method is labelled (Model-mediated provider).
 	it("fetches through an opened page, labels the text as a model's rendition, and rejects unopened pages", async () => {

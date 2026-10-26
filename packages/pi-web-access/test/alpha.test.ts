@@ -213,4 +213,26 @@ describe("sub2api-search provider", () => {
 		});
 		expect(get(unindexed.structured, "content")).toBe("fallback text");
 	});
+
+	// web-fetch: Long pages continue by offset, when a provider cannot reach the requested offset.
+	it("hands a continuation the alpha window limit cannot reach to the next provider instead of ending the page", async () => {
+		const url = "https://example.com/long-listing";
+		server.route(
+			PATH,
+			alphaOpen({ url, title: "Listing", crawled: "today", totalLines: 10_000, line: (n) => `l${n}` }),
+		);
+		server.route("/ds/tools/fetch", deepseekPage("Listing", "x".repeat(200_000)));
+		pi = await startAlpha();
+		const first = await call(pi, "web_fetch", { url, maxChars: 100_000 });
+		expect(get(first.structured, "provider")).toBe("alpha");
+		expect(first.structured).toMatchObject({ truncated: true });
+		const nextOffset = get(first.structured, "nextOffset");
+		expect(typeof nextOffset).toBe("number");
+		const second = await call(pi, "web_fetch", { url, offset: Number(nextOffset), maxChars: 100_000 });
+		expect(get(second.structured, "attempts")).toMatchObject([
+			{ provider: "alpha", outcome: "error", reason: expect.stringMatching(/^could not reach offset \d+/) },
+			{ provider: "ds", outcome: "ok" },
+		]);
+		expect(String(get(second.structured, "content")).length).toBeGreaterThan(0);
+	});
 });

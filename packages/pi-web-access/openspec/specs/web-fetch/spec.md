@@ -50,6 +50,13 @@ When the page text from `offset` onward exceeds `maxChars`, the tool SHALL retur
 - **WHEN** a 6000-character page is fetched with `offset: 9000`
 - **THEN** `content` is empty, `truncated` is `false` and `warnings` says the offset is past the end of the page
 
+### Requirement: A provider that cannot reach the offset fails the attempt
+When a provider's text ends before the requested `offset` without reaching the end of the page, the attempt SHALL fail with a reason saying the offset could not be reached, so that the next provider of the chain is tried instead of reporting the offset as past the end.
+
+#### Scenario: Continuation beyond a provider's reach
+- **WHEN** a provider returns a first window of a long page with `truncated: true`, but cannot return text at that window's `nextOffset`
+- **THEN** the continuation call records that provider as `error` with reason `could not reach offset …` and the next provider serves the window
+
 ### Requirement: Uncertain page ends are reported as truncated
 A provider that cannot tell whether its text was cut exactly at the end of the window (`sub2api-claude`) SHALL report `truncated: true` with `nextOffset` in that case; a following call then gets the offset-past-the-end result rather than losing text.
 
