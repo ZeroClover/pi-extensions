@@ -8,8 +8,11 @@ export interface GateSettings {
 
 export type GateState = { open: true } | { open: false; reason: string };
 
-/** Its own retry loop calls `onResponse` per attempt, so one call can yield several response events. */
-const MULTI_RESPONSE_API = "openai-codex-responses";
+/**
+ * Pi's middleware reports every HTTP response of the AWS SDK, which retries throttles and transient failures inside
+ * one request whatever `retry.provider.maxRetries` says, so one request can yield several response events.
+ */
+const MULTI_RESPONSE_API = "bedrock-converse-stream";
 
 /**
  * Attributes an `after_provider_response` event to the failed request only when one foreground request provably
@@ -27,7 +30,7 @@ export class HeaderCapture {
 	gate(settings: GateSettings): GateState {
 		if (this.closedReason) return { open: false, reason: this.closedReason };
 		if (settings.cacheWarming !== "off") return { open: false, reason: "cacheWarming is not off" };
-		if (this.warmingSeen) return { open: false, reason: "a cache-warming request ran in this session" };
+		if (this.warmingSeen) return { open: false, reason: "a cache-warming decision occurred in this session" };
 		if ((settings.providerMaxRetries ?? 0) !== 0) return { open: false, reason: "retry.provider.maxRetries is not 0" };
 		return { open: true };
 	}
@@ -38,7 +41,10 @@ export class HeaderCapture {
 		return state;
 	}
 
-	/** `cache_warming_decision`: warming requests share the response hook for the rest of the session. */
+	/**
+	 * `cache_warming_decision`: warming requests share the response hook for the rest of the session. Pi also emits it
+	 * for decisions that end in `stop`, so the gate closes even when no warming request runs.
+	 */
 	warmingDecision(): void {
 		this.warmingSeen = true;
 	}

@@ -79,7 +79,7 @@ export default function (pi: ExtensionAPI): void {
 	pi.registerCommand("retry", {
 		description: "Show pi-retry's configuration and state; cancel a wait; turn retries on or off for the session",
 		handler: async (args, ctx) => {
-			// With a model selected the gate includes its adapter's rule, so a Codex session shows why headers are off.
+			// With a model selected the gate includes its adapter's rule, so a Bedrock session shows why headers are off.
 			const api = ctx.model?.api;
 			const gate = api ? controller.capture.gateFor(gateSettings(), api) : controller.gate(gateSettings());
 			const result = runRetryCommand(args, controller, gate, Date.now());

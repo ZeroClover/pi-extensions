@@ -1,3 +1,4 @@
+import type { AssistantMessageDiagnostic } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { failure, type Pi } from "../../../tools/e2e/src/index.ts";
 import { notices, startRetry } from "./fixtures.ts";
@@ -16,6 +17,8 @@ interface Row {
 	/** With `maxRetries: 0`, a retryable failure gives up at once and a non-retryable one is not retried. */
 	decision: "giving up after 0 retries" | "not retrying";
 	category: string;
+	/** Diagnostics the adapter attaches to the failed message. */
+	diagnostics?: AssistantMessageDiagnostic[];
 }
 
 const retried = "giving up after 0 retries";
@@ -134,6 +137,49 @@ const ROWS: Row[] = [
 		category: "quota",
 	},
 	{
+		source: "Codex 429 without resets_at (Pi's Codex adapter)",
+		text: "You have hit your ChatGPT usage limit (plus plan).",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "Codex 429 without a plan (Pi's Codex adapter)",
+		text: "You have hit your ChatGPT usage limit.",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "Codex 429 resetting in under 30 s (Pi's Codex adapter)",
+		text: "You have hit your ChatGPT usage limit (plus plan). Try again in ~0 min.",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "Codex 429 over SSE after a WebSocket fallback (Pi's Codex adapter)",
+		text: "You have hit your ChatGPT usage limit.",
+		diagnostics: [
+			{
+				type: "provider_transport_failure",
+				timestamp: 0,
+				error: { message: "connect ECONNREFUSED 127.0.0.1:443", code: "ECONNREFUSED" },
+			},
+		],
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "Codex usage limit relayed as a stream error event (Pi's Codex adapter)",
+		text: "Codex error: The usage limit has been reached",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "Codex rate limit relayed as a stream error event (Pi's Codex adapter)",
+		text: "Codex error: rate_limit_exceeded",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
 		source: "OpenCode Go subscription",
 		text: '429 {"type":"error","error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached"}}',
 		decision: stopped,
@@ -141,6 +187,38 @@ const ROWS: Row[] = [
 	},
 	// Node transport
 	{ source: "Node fetch", text: "fetch failed", decision: retried, category: "transport" },
+	// Pi 1.4 additions to its retryable list
+	{
+		source: "proxy wrapping the Codex CLI",
+		text: "stream disconnected before completion: stream closed before response.completed",
+		decision: retried,
+		category: "transport",
+	},
+	{
+		source: "gateway response.failed",
+		text: "The stream was interrupted before the response completed",
+		decision: retried,
+		category: "transport",
+	},
+	{ source: "gateway response.failed", text: "HTTP/2 stream failed", decision: retried, category: "transport" },
+	{
+		source: "node-fetch (google-vertex ADC token refresh)",
+		text: "request to https://oauth2.googleapis.com/token failed, reason: ",
+		decision: retried,
+		category: "transport",
+	},
+	{
+		source: "gateway response.failed code",
+		text: "upstream_request_failed: Upstream request failed",
+		decision: retried,
+		category: "server_error",
+	},
+	{
+		source: "gateway response.failed code",
+		text: "upstream_stream_read_error",
+		decision: retried,
+		category: "server_error",
+	},
 	// No known wording: treated as transient.
 	{
 		source: "unrecognised gateway text",
@@ -187,6 +265,12 @@ const ROWS: Row[] = [
 		category: "quota",
 	},
 	{
+		source: "Anthropic low credit balance typed as invalid_request_error",
+		text: '400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}',
+		decision: stopped,
+		category: "quota",
+	},
+	{
 		source: "OpenAI quota with a reset time",
 		text: "429 You exceeded your current quota. Please try again in 2s.",
 		decision: retried,
@@ -219,7 +303,7 @@ describe("error classification", () => {
 		const outcomes: { source: string; text: string; notice: string | undefined }[] = [];
 		for (const row of ROWS) {
 			const before = notices(pi).length;
-			pi.provider.respond(failure(row.text));
+			pi.provider.respond(failure(row.text, row.diagnostics ? { diagnostics: row.diagnostics } : {}));
 			await pi.prompt(`request for ${row.source}`);
 			const said = notices(pi).slice(before);
 			outcomes.push({ source: row.source, text: row.text, notice: said.length === 1 ? said[0] : said.join(" | ") });

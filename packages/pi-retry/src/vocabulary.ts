@@ -56,16 +56,10 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	{ pattern: /content.?policy/i, category: "content_policy" },
 	{ pattern: /content.?filter/i, category: "content_policy" },
 
-	// Invalid request: Anthropic/OpenAI `invalid_request_error`, gRPC `INVALID_ARGUMENT`, Bedrock `ValidationException`
-	// and Pi's `Validation error:` prefix, LiteLLM `BadRequestError`.
-	{ pattern: /invalid.?request/i, category: "invalid_request" },
-	{ pattern: /invalid.?argument/i, category: "invalid_request" },
-	{ pattern: /validation.?(?:exception|error)/i, category: "invalid_request" },
-	{ pattern: /bad.?request/i, category: "invalid_request" },
-
 	// Quota: Pi's non-retryable list without its plain `quota exceeded` (Google uses it for per-minute limits), OpenAI
-	// `insufficient_quota` and its billing text, LiteLLM `BudgetExceededError`, HTTP 402 wording, ChatGPT and OpenCode
-	// subscription limits.
+	// `insufficient_quota` and its billing text, LiteLLM `BudgetExceededError`, HTTP 402 wording, ChatGPT (including
+	// the workplace `subscription_sharing_workplace_individual_usage_limit_exceeded`) and OpenCode subscription limits.
+	// Tested before invalid_request: Anthropic's low-credit error is typed `invalid_request_error`.
 	{ pattern: /insufficient_quota/i, category: "quota" },
 	{ pattern: /exceeded your current quota/i, category: "quota" },
 	{ pattern: /billing/i, category: "quota" },
@@ -73,7 +67,27 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	{ pattern: /payment.?required/i, category: "quota" },
 	{ pattern: /usage.?limit/i, category: "quota" },
 	{ pattern: /available balance/i, category: "quota" },
+
+	// Invalid request: Anthropic/OpenAI `invalid_request_error`, gRPC `INVALID_ARGUMENT`, Bedrock `ValidationException`
+	// and Pi's `Validation error:` prefix, LiteLLM `BadRequestError`.
+	{ pattern: /invalid.?request/i, category: "invalid_request" },
+	{ pattern: /invalid.?argument/i, category: "invalid_request" },
+	{ pattern: /validation.?(?:exception|error)/i, category: "invalid_request" },
+	{ pattern: /bad.?request/i, category: "invalid_request" },
 ];
+
+/**
+ * Pi's Codex adapter (`openai-codex-responses.js:1250-1262`) renders a JSON error body as this message on every 429,
+ * a transient `rate_limit_exceeded` included, and on any status whose error `code`, or `type` when `code` is absent,
+ * contains `usage_limit_reached`, `usage_not_included` or `rate_limit_exceeded`. It appends ` Try again in ~N min.`
+ * only when the body has `resets_at`; `~0 min` means the reset is under 30 s away or already past. Anchored to the
+ * whole error message, so it is matched without diagnostics and before the deterministic `usage.?limit` wording and
+ * the specific statuses.
+ */
+export const CODEX_NO_RESET_RULE: Rule<"rate_limit"> = {
+	pattern: /^You have hit your ChatGPT usage limit(?: \([^)]*\))?\.(?: Try again in ~0 min\.)?$/,
+	category: "rate_limit",
+};
 
 /** Transient wording, tested in this order of categories after the specific HTTP statuses. */
 export const TRANSIENT_RULES: readonly Rule<TransientCategory>[] = [
@@ -99,7 +113,8 @@ export const TRANSIENT_RULES: readonly Rule<TransientCategory>[] = [
 	{ pattern: /deadline.?exceeded/i, category: "timeout" },
 
 	// Transport: Pi's network, fetch, socket, WebSocket and premature-stream-end wording, Node error codes, LiteLLM
-	// `APIConnectionError`.
+	// `APIConnectionError`. Pi 1.4: the Codex CLI disconnect relayed by proxies (#11057), gateway stream interruptions
+	// (#10920), and node-fetch system errors such as the google-vertex ADC token refresh (#10996).
 	{ pattern: /fetch failed|network.?error|getaddrinfo/i, category: "transport" },
 	{ pattern: /connection.?(?:error|refused|lost|reset)/i, category: "transport" },
 	{ pattern: /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE/i, category: "transport" },
@@ -109,10 +124,14 @@ export const TRANSIENT_RULES: readonly Rule<TransientCategory>[] = [
 	{ pattern: /stream ended before|ended without/i, category: "transport" },
 	{ pattern: /http2 request did not get a response|pending stream has been canceled/i, category: "transport" },
 	{ pattern: /websocket.?(?:closed|error)/i, category: "transport" },
+	{ pattern: /stream disconnected before completion/i, category: "transport" },
+	{ pattern: /stream was interrupted|http\/?2 stream failed/i, category: "transport" },
+	{ pattern: /request to \S+ failed, reason:/i, category: "transport" },
 
 	// Server errors: Pi's `server.?error` / `internal.?error` / `service.?unavailable` / gateway wording, Anthropic
 	// `api_error`, gRPC `UNAVAILABLE`, Bedrock `ServiceUnavailableException` / `ModelStreamErrorException` and Pi's
-	// `Model stream error:` prefix, OpenAI's "you can retry" guidance, ChatGPT's temporary unavailability.
+	// `Model stream error:` prefix, OpenAI's "you can retry" guidance, ChatGPT's temporary unavailability, gateway
+	// upstream failures relayed as Responses `response.failed` events and codes (#10920, Pi 1.4).
 	{ pattern: /server.?error|internal.?error|api_error/i, category: "server_error" },
 	{
 		pattern: /service.?(?:is.?)?(?:temporarily.?)?unavailable|(?<![a-z])unavailable(?![a-z])/i,
@@ -120,7 +139,11 @@ export const TRANSIENT_RULES: readonly Rule<TransientCategory>[] = [
 	},
 	{ pattern: /model.?stream.?error/i, category: "server_error" },
 	{ pattern: /bad gateway/i, category: "server_error" },
-	{ pattern: /provider.?returned.?(?:an.?)?error|unable to forward upstream/i, category: "server_error" },
+	{
+		pattern:
+			/provider.?returned.?(?:an.?)?error|unable to forward upstream|upstream.?request.?failed|upstream_stream_read_error/i,
+		category: "server_error",
+	},
 	{ pattern: /exceeded request buffer limit while retrying upstream/i, category: "server_error" },
 	{ pattern: /you can retry your request|try your request again|please retry your request/i, category: "server_error" },
 ];

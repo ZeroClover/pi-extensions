@@ -52,8 +52,8 @@ When no header or diagnostic hint exists, a hint SHALL be read from the error te
 - **THEN** the hint is 720 000 ms with source `text try again in`
 
 #### Scenario: Codex usage-limit rounded to zero
-- **WHEN** the error text ends with `Try again in ~0 min.`
-- **THEN** no hint is produced and the quota policy applies
+- **WHEN** the error text is Pi's Codex message ending with `Try again in ~0 min.`, which Pi renders when the reset is less than 30 s away or already past
+- **THEN** no hint is produced, and the message is treated like a Codex usage limit without a reset time: `rate_limit`, retried with backoff (see error-classification "Codex usage limit without a reset time")
 
 #### Scenario: Pi provider-retry cap message
 - **WHEN** the error text is `Server requested 90s retry delay (max: 60s). 429 rate_limit_error`
@@ -97,11 +97,11 @@ A hint SHALL be compared with `maxRetryAfterMs`. A hint within the limit is hono
 - **THEN** any hint is honoured
 
 ### Requirement: Header capture gate
-Header hints from `after_provider_response` SHALL be used only when the extension can prove that one foreground request produced exactly one response event; otherwise header hints are off, diagnostics and text apply, and `/retry` shows the gate state with its reason.
+Header hints from `after_provider_response` SHALL be used only when the extension can prove that one foreground request produced exactly one response event; otherwise header hints are off, diagnostics and text apply, and `/retry` shows the gate state with its reason. An adapter that retries inside one request regardless of Pi's settings SHALL be excluded by its API, so that its several response events never close the gate for other requests.
 
 #### Scenario: Gate conditions
 - **WHEN** the gate is evaluated for a failure
-- **THEN** it is open only if Pi's `cacheWarming` setting is `off`, no `cache_warming_decision` event has fired in the session, Pi's `retry.provider.maxRetries` is 0, and the failed message's API is not `openai-codex-responses`
+- **THEN** it is open only if Pi's `cacheWarming` setting is `off`, no `cache_warming_decision` event has fired in the session, Pi's `retry.provider.maxRetries` is 0, and the failed message's API is not `bedrock-converse-stream`
 
 #### Scenario: Gate open
 - **WHEN** `cacheWarming` is `off`, `retry.provider.maxRetries` is 0, the failed message's API is `mistral-conversations`, and the window holds one capture with status 429 and `retry-after: 45`
@@ -115,9 +115,13 @@ Header hints from `after_provider_response` SHALL be used only when the extensio
 - **WHEN** `retry.provider.maxRetries` is 2 and the window holds a 429 capture followed by a 200 capture before a mid-stream failure
 - **THEN** no header capture is used
 
+#### Scenario: Bedrock adapter
+- **WHEN** the gate conditions on Pi's settings hold, the failed message's API is `bedrock-converse-stream`, and the window holds two 429 captures with `retry-after: 1`, as the AWS SDK's own retry and its final attempt produce
+- **THEN** no header capture is used for this failure, the gate is not closed for the session, and a later failure on another adapter with one 429 capture and `retry-after: 1` still gets the 1 s header hint
+
 #### Scenario: Codex adapter
-- **WHEN** the failed message's API is `openai-codex-responses` and the window holds a 429 capture
-- **THEN** no header capture is used; the Codex text hint applies if present
+- **WHEN** the gate conditions on Pi's settings hold, the failed message's API is `openai-codex-responses`, its error text is Pi's Codex message `You have hit your ChatGPT usage limit.`, and the window holds one capture with status 429 and `retry-after: 1`
+- **THEN** the category is `rate_limit` and the 1 s header hint is used
 
 ### Requirement: Response capture window
 When the gate is open, the capture SHALL be the response event received between the failed request's `context` event and its assistant `message_end`; a window with no capture, more than one capture, or a capture with status below 400 yields no header hint. Captures are bound by this window, never by message object identity.
