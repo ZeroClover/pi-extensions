@@ -168,6 +168,18 @@ const ROWS: Row[] = [
 		category: "rate_limit",
 	},
 	{
+		source: "Codex usage limit relayed as a stream error event (Pi's Codex adapter)",
+		text: "Codex error: The usage limit has been reached",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "Codex rate limit relayed as a stream error event (Pi's Codex adapter)",
+		text: "Codex error: rate_limit_exceeded",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
 		source: "OpenCode Go subscription",
 		text: '429 {"type":"error","error":{"type":"GoUsageLimitError","message":"Monthly usage limit reached"}}',
 		decision: stopped,

@@ -103,12 +103,14 @@ A missing file uses the defaults. Invalid JSON, unknown keys, out-of-range value
 | `timeout` | yes | HTTP 408/504/524, `timed out`, `timeout`, `DEADLINE_EXCEEDED`, `ModelTimeoutException` |
 | `transport` | yes | `fetch failed`, `ECONNRESET`, `ENOTFOUND`, `socket hang up`, `other side closed`, `terminated`, `stream ended before …`, `stream disconnected before completion`, `stream was interrupted`, `HTTP/2 stream failed`, `request to <url> failed, reason:`, `websocket closed`, `APIConnectionError` |
 | `unknown` | yes | anything that matches no rule; treated as transient and retried with backoff |
-| `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT's message with `Try again in ~N min.`, OpenCode), `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `available balance` |
+| `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT's message with `Try again in ~N min.`, OpenCode), `Codex error: The usage limit has been reached` (a Codex usage limit relayed in the stream), `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `available balance` |
 | `auth` | no | HTTP 401/403, `authentication_error`, `permission_error`, `invalid_api_key`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `AccessDeniedException` |
 | `not_found` | no | HTTP 404, `not_found_error`, `model_not_found`, `NOT_FOUND`, `ResourceNotFoundException` |
 | `invalid_request` | no | HTTP 400/422, HTTP 413 unless Pi's overflow patterns match it, `invalid_request_error`, `INVALID_ARGUMENT`, `ValidationException`, `BadRequestError` |
 | `content_policy` | no | `content_policy_violation`, `content_filter` |
 | `context_overflow` | no | Pi's overflow patterns (`prompt is too long`, `exceeds the context window`, an error text starting with `413` or `<provider> API error (413):` since Pi 1.4, …), `context_length_exceeded`, `ContextWindowExceededError`, `request_too_large` (handled by Pi's compaction) |
+
+A Codex error relayed inside the response stream reaches pi-retry as `Codex error: <message or code>`. Pi drops the event's status and reset time, so a usage limit there is never retried, even when it resets soon, while `rate_limit_exceeded` is retried with backoff.
 
 Classification follows these precedence rules:
 
