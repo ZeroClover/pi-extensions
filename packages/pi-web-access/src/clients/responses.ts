@@ -70,7 +70,8 @@ export async function postResponses(request: HttpRequest): Promise<ResponsesResu
 		return undefined;
 	};
 	for await (const chunk of response.body) {
-		buffer += decoder.decode(chunk, { stream: true }).replace(/\r\n/g, "\n");
+		// Normalise the whole buffer: a CRLF pair can be split between two network chunks.
+		buffer = (buffer + decoder.decode(chunk, { stream: true })).replace(/\r\n/g, "\n");
 		let end = buffer.indexOf("\n\n");
 		while (end >= 0) {
 			const result = handle(buffer.slice(0, end));

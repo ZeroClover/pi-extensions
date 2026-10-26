@@ -18,6 +18,8 @@ export interface Reply {
 	text?: string;
 	/** Server-sent events: each object is sent as `event: <type>` plus its JSON data. */
 	sse?: Record<string, unknown>[];
+	/** Raw body pieces, written one by one with a pause between them so that the client reads separate chunks. */
+	chunks?: string[];
 	delayMs?: number;
 	/** Never answers; only the client closing the connection ends the request. */
 	hang?: boolean;
@@ -68,6 +70,21 @@ export async function startServer(): Promise<FixtureServer> {
 			if (reply.hang) return;
 			const send = (): void => {
 				if (res.destroyed) return;
+				if (reply.chunks) {
+					res.writeHead(reply.status ?? 200, { "content-type": "text/event-stream", ...reply.headers });
+					const pieces = [...reply.chunks];
+					const next = (): void => {
+						const piece = pieces.shift();
+						if (piece === undefined || res.destroyed) {
+							res.end();
+							return;
+						}
+						res.write(piece);
+						setTimeout(next, 30);
+					};
+					next();
+					return;
+				}
 				if (reply.sse) {
 					res.writeHead(reply.status ?? 200, { "content-type": "text/event-stream", ...reply.headers });
 					for (const event of reply.sse) {

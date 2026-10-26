@@ -114,6 +114,13 @@ export function createFetchTool(state: WebAccessState) {
 							.adapter(entry)
 							.runFetch({ url: url.toString(), offset, maxChars }, { credentials, signal: attemptSignal });
 						if (page.content.trim() === "") throw new ProviderError("no text returned");
+						// A provider that stopped before the requested offset, without reaching the end of the page,
+						// cannot serve this window; another provider may.
+						if (offset >= page.content.length && !page.complete) {
+							throw new ProviderError(
+								`could not reach offset ${offset} (the provider returned ${page.content.length} characters of a longer page)`,
+							);
+						}
 						return { outcome: "ok", value: page };
 					},
 					{
