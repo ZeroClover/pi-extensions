@@ -2,6 +2,11 @@
   dir: packages/pi-retry
   intents:
     - khaki-jobs-live
+"@zeroclover/pi-retry@0.1.1":
+  dir: packages/pi-retry
+  intents:
+    - honest-queens-scream
+    - large-melons-give
 "@zeroclover/pi-rtk@0.1.0":
   dir: packages/pi-rtk
   intents:
