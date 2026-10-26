@@ -1,5 +1,15 @@
 # @zeroclover/pi-retry
 
+## 0.1.1
+
+### Patch Changes
+
+- Header hints now stay on for the rest of the session after a Bedrock throttle that the AWS SDK retried. Before, one such throttle turned them off on every adapter.
+- Codex requests served over SSE now honour `retry-after` headers.
+- Pi's Codex message "You have hit your ChatGPT usage limit." is now a rate limit and is retried with backoff when it has no reset time, or when its reset time is "Try again in ~0 min.". Pi renders this message for every Codex 429, transient rate limits included.
+- The gateway and stream errors that Pi 1.4 added to its retry list now get a category (`transport` or `server_error`) and a reason instead of `unknown`. Anthropic's low-credit error now reads as `quota` instead of `invalid_request`.
+- README corrected for Pi 1.4. It now also explains how Codex errors relayed in the response stream are classified: a usage limit there is not retried, because Pi drops its reset time, while a rate limit is retried with backoff.
+
 ## 0.1.0
 
 ### Minor Changes
