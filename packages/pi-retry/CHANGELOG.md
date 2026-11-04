@@ -1,5 +1,12 @@
 # @zeroclover/pi-retry
 
+## 0.1.2
+
+### Patch Changes
+
+- Zhipu/Z.ai plan and balance limits now count as quota and stop, unless a retry hint is accepted, instead of being retried until `maxRetries` runs out: codes 1113, 1308-1310, 1313, 1314 and 1316-1321, or their wording, such as `使用上限`.
+- Zhipu/Z.ai model and API key restrictions (codes 1311 and 1315) now count as auth and stop.
+
 ## 0.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
 	"name": "@zeroclover/pi-web-access",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "web_search and web_fetch tools routed over Sub2API, DeepSeek and Exa providers with priority, fallback, site rules and per-call override",
 	"license": "AGPL-3.0-only",
 	"repository": {

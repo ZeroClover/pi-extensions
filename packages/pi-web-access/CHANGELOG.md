@@ -1,5 +1,13 @@
 # @zeroclover/pi-web-access
 
+## 0.1.1
+
+### Patch Changes
+
+- `web_search` treats null arguments as omitted. Before, `domains: null` searched for `site:null` and dropped every result, and `maxResults: null` failed.
+- `web_search` rejects a null `query` instead of searching for the word "null".
+- `web_search` and `web_fetch` no longer repeat their name in the system prompt.
+
 ## 0.1.0
 
 ### Minor Changes
