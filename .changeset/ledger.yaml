@@ -44,3 +44,7 @@
   dir: packages/pi-web-access
   intents:
     - quiet-doors-trade
+"@zeroclover/pi-web-access@0.1.2":
+  dir: packages/pi-web-access
+  intents:
+    - mean-geckos-occur
