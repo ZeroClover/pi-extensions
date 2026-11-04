@@ -47,7 +47,7 @@ Each failure SHALL receive exactly one category: `rate_limit`, `overloaded`, `se
 - **THEN** the category is `unknown` and the failure is retryable
 
 #### Scenario: Quota wording
-- **WHEN** the error text contains one of `insufficient_quota`, `billing`, `out of budget`, `BudgetExceededError`, `PaymentRequiredError`, `Payment Required`, `exceeded your current quota`, `usage limit`, `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `GoUsageLimitError`, `FreeUsageLimitError`, `Monthly usage limit reached`, `available balance`, other than Pi's Codex usage-limit message that carries no usable reset time (no reset at all, or ` Try again in ~0 min.`); see "Codex usage limit without a reset time"
+- **WHEN** the error text contains one of `insufficient_quota`, `billing`, `out of budget`, `BudgetExceededError`, `PaymentRequiredError`, `Payment Required`, `exceeded your current quota`, `usage limit`, `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `GoUsageLimitError`, `FreeUsageLimitError`, `Monthly usage limit reached`, `available balance`, `"code":"1308"`, `"code":1308`, `使用上限`, other than Pi's Codex usage-limit message that carries no usable reset time (no reset at all, or ` Try again in ~0 min.`); see "Codex usage limit without a reset time"
 - **THEN** the category is `quota`
 
 #### Scenario: Quota without hint
@@ -117,7 +117,7 @@ An HTTP status SHALL be taken from the captured response or diagnostics when ava
 - **THEN** no status is recognised and the category is `unknown`
 
 ### Requirement: Provider vocabulary
-The classifier SHALL recognise the error wording of every provider API Pi ships (Anthropic, OpenAI Completions/Responses/Codex, Google, Bedrock, Mistral), of common gateways (OpenRouter, LiteLLM proxy including its exception class names, gRPC status names), of subscription usage limits, and every pattern of Pi's own retryable and non-retryable lists (checked against Pi 1.4). The vocabulary SHALL be kept as reviewable tables with a source note per group.
+The classifier SHALL recognise the error wording of every provider API Pi ships (Anthropic, OpenAI Completions/Responses/Codex, Google, Bedrock, Mistral), of common gateways (OpenRouter, LiteLLM proxy including its exception class names, gRPC status names), of subscription usage limits, and every pattern of Pi's own retryable and non-retryable lists (checked against Pi 1.5). The vocabulary SHALL be kept as reviewable tables with a source note per group.
 
 #### Scenario: Anthropic error types
 - **WHEN** the error text contains one of `rate_limit_error`, `overloaded_error`, `authentication_error`, `permission_error`, `not_found_error`, `invalid_request_error`, `request_too_large`, `api_error`
@@ -148,7 +148,7 @@ The classifier SHALL recognise the error wording of every provider API Pi ships 
 - **THEN** the categories are, in order, `transport`, `transport`, `transport`, `transport`, `server_error`, `server_error`, every one is retryable, and the reason names the matched wording instead of `no known pattern`
 
 #### Scenario: Subscription limits
-- **WHEN** the error text contains one of `usage limit`, `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `GoUsageLimitError`, `FreeUsageLimitError`, `Monthly usage limit reached`, other than Pi's Codex usage-limit message that carries no usable reset time (no reset at all, or ` Try again in ~0 min.`); see "Codex usage limit without a reset time"
+- **WHEN** the error text contains one of `usage limit`, `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `GoUsageLimitError`, `FreeUsageLimitError`, `Monthly usage limit reached`, `"code":"1308"`, `"code":1308`, `使用上限`, other than Pi's Codex usage-limit message that carries no usable reset time (no reset at all, or ` Try again in ~0 min.`); see "Codex usage limit without a reset time"
 - **THEN** the category is `quota`
 
 #### Scenario: Codex usage limit without a reset time
@@ -161,8 +161,13 @@ The classifier SHALL recognise the error wording of every provider API Pi ships 
 - **WHEN** the error text is `You have hit your ChatGPT usage limit (plus). Try again in 12 minutes.`
 - **THEN** the category is `quota`, a 12-minute hint is found, and the failure is retryable when the limit is 30 minutes
 
+#### Scenario: Zhipu/Z.ai plan usage limit
+- **WHEN** no retry-after hint is accepted, no user pattern matches, and the error text carries code 1308 as a string, with or without a status prefix, as in `429: {"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。"}` or `{"code":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。"}`, or as a number, as in `429 {"code":1308,"message":"x"}`, a form taken from Pi's pattern and not observed in a response, or a Pi adapter has rendered the failure without `"code"`, leaving the wording `使用上限`, as in `429 已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。` or `429 Too Many Requests: 已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。 (1308)`
+- **THEN** the category is `quota`, no hint is read from the reset time in the text, which carries no time zone, and the failure is not retryable, with the reason `quota or billing limit without a reset time`, or the acceptance limit's reason when a hint above that limit is present
+- **AND** a 429 that carries a longer code such as `"code":"13080"`, or another Zhipu/Z.ai code such as `"code":"1302"`, and no quota wording stays `rate_limit` and retryable
+
 #### Scenario: Pi's lists are covered with documented differences
-- **WHEN** an error text matches an entry of Pi 1.4's built-in retryable or non-retryable lists, and no user pattern is configured
+- **WHEN** an error text matches an entry of Pi 1.5's built-in retryable or non-retryable lists, and no user pattern is configured
 - **THEN** the decision follows pi-retry's category, status and hint rules, not Pi's wording-only decision (Pi's overflow check, then `isRetryableAssistantError`). Pi's lists are covered, but the two decisions deliberately differ, as in these examples:
   - `quota exceeded`: Pi stops; here `rate_limit`, retried, because Google's per-minute `Quota exceeded for quota metric` resets.
   - A Gemini 429 that says `billing` and `Quota exceeded` and carries `"retryDelay": "33s"`: Pi stops; here `quota` with an accepted hint, retried.
@@ -170,9 +175,10 @@ The classifier SHALL recognise the error wording of every provider API Pi ships 
   - `400 Provider returned error`: Pi retries; here `invalid_request`, not retried. The same holds when the 400 is captured or comes from diagnostics.
   - `503 model not found`: Pi retries; here `not_found`, not retried.
   - `429 You exceeded your current quota.`: Pi retries; here `quota` without a hint, not retried.
-  - `500 litellm.ContextWindowExceededError`: Pi retries; here `context_overflow`, not retried.
+  - `500 litellm.ContextWindowExceededError`: Pi retries; here `context_overflow`, not retried. The prose form `Context Window exceeded`, which LiteLLM's pre-call check adds to the class name, is context overflow for Pi 1.5 too: Pi compacts the context and re-sends.
   - `429: Too many tokens per minute`: Pi treats it as context overflow, compacts the context and re-sends; here `rate_limit`, retried after a wait.
-- **AND** these agree with Pi: `429 insufficient_quota` stops (`quota` without a hint), and OpenAI's `429 … invalid_request_error … rate_limit_exceeded` is retried (`rate_limit`)
+  - `429 已达到 5 小时的使用上限。…`, with no `"code"` in the text: Pi retries, because its 1308 entry needs `"code"`; here `quota` without a hint, not retried.
+- **AND** these agree with Pi: `429 insufficient_quota` and `429: {"code":"1308",…}` stop (`quota` without a hint), and OpenAI's `429 … invalid_request_error … rate_limit_exceeded` is retried (`rate_limit`)
 - **AND** Pi recognises 429, 500, 502, 503, 504, 520 and 524 wherever no letter or digit touches the number; here a number counts only in a status position
 
 #### Scenario: Google per-minute quota

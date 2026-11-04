@@ -33,7 +33,9 @@ export interface Rule<C extends Category = Category> {
  * overflow group only adds wording Pi does not know.
  */
 export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
-	// Overflow: LiteLLM `ContextWindowExceededError`, OpenAI `context_length_exceeded`, Anthropic HTTP 413 type.
+	// Overflow: LiteLLM `ContextWindowExceededError`, OpenAI `context_length_exceeded`, Anthropic HTTP 413 type. Since
+	// Pi 1.5, `isContextOverflow` recognises LiteLLM's prose `Context Window exceeded`; it needs the spaces, so the first
+	// rule still classifies the bare class name and the underscore form.
 	{ pattern: /context.?window.?exceeded/i, category: "context_overflow" },
 	{ pattern: /context.?length.?exceeded/i, category: "context_overflow" },
 	{ pattern: /request_too_large/i, category: "context_overflow" },
@@ -58,7 +60,8 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 
 	// Quota: Pi's non-retryable list without its plain `quota exceeded` (Google uses it for per-minute limits), OpenAI
 	// `insufficient_quota` and its billing text, LiteLLM `BudgetExceededError`, HTTP 402 wording, ChatGPT (including
-	// the workplace `subscription_sharing_workplace_individual_usage_limit_exceeded`) and OpenCode subscription limits.
+	// the workplace `subscription_sharing_workplace_individual_usage_limit_exceeded`) and OpenCode subscription limits,
+	// Zhipu/Z.ai's plan limit: code 1308 (#11537, Pi 1.5) and `使用上限`, which some adapters render without the code.
 	// Tested before invalid_request: Anthropic's low-credit error is typed `invalid_request_error`.
 	{ pattern: /insufficient_quota/i, category: "quota" },
 	{ pattern: /exceeded your current quota/i, category: "quota" },
@@ -67,6 +70,7 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	{ pattern: /payment.?required/i, category: "quota" },
 	{ pattern: /usage.?limit/i, category: "quota" },
 	{ pattern: /available balance/i, category: "quota" },
+	{ pattern: /"code"\s*:\s*"?1308(?![0-9])|使用上限/i, category: "quota" },
 
 	// Invalid request: Anthropic/OpenAI `invalid_request_error`, gRPC `INVALID_ARGUMENT`, Bedrock `ValidationException`
 	// and Pi's `Validation error:` prefix, LiteLLM `BadRequestError`.
@@ -77,7 +81,7 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 ];
 
 /**
- * Pi's Codex adapter (`openai-codex-responses.js:1250-1262`) renders a JSON error body as this message on every 429,
+ * Pi's Codex adapter (`openai-codex-responses.js:1245-1257`) renders a JSON error body as this message on every 429,
  * a transient `rate_limit_exceeded` included, and on any status whose error `code`, or `type` when `code` is absent,
  * contains `usage_limit_reached`, `usage_not_included` or `rate_limit_exceeded`. It appends ` Try again in ~N min.`
  * only when the body has `resets_at`; `~0 min` means the reset is under 30 s away or already past. Anchored to the
