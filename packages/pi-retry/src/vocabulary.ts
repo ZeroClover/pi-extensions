@@ -47,6 +47,14 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	{ pattern: /invalid.?api.?key|incorrect api key|invalid x-api-key|api key not valid/i, category: "auth" },
 	{ pattern: /unauthenticated|(?<![a-z])unauthori[sz]ed/i, category: "auth" },
 	{ pattern: /access.?denied/i, category: "auth" },
+	// Zhipu/Z.ai's 429s about what a credential may do, which waiting cannot fix: a model outside the plan (1311) and an
+	// API key of the wrong product type (1315). Same sources as the quota group below.
+	{ pattern: /"code"\s*:\s*"?(?:1311|1315)(?![0-9])/i, category: "auth" },
+	{
+		pattern:
+			/订阅套餐暂未开放|仅限企业编程套餐|subscription plan does not yet include access|API Key is limited to enterprise coding package/i,
+		category: "auth",
+	},
 
 	// Not found: Anthropic `not_found_error`, OpenAI `model_not_found`, gRPC `NOT_FOUND`, LiteLLM `NotFoundError`,
 	// Bedrock `ResourceNotFoundException`. The look-behind keeps `ENOTFOUND` (a DNS failure) out.
@@ -61,7 +69,9 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	// Quota: Pi's non-retryable list without its plain `quota exceeded` (Google uses it for per-minute limits), OpenAI
 	// `insufficient_quota` and its billing text, LiteLLM `BudgetExceededError`, HTTP 402 wording, ChatGPT (including
 	// the workplace `subscription_sharing_workplace_individual_usage_limit_exceeded`) and OpenCode subscription limits,
-	// Zhipu/Z.ai's plan limit: code 1308 (#11537, Pi 1.5) and `使用上限`, which some adapters render without the code.
+	// Zhipu/Z.ai's account and plan limits from https://docs.bigmodel.cn/cn/faq/api-code and
+	// https://docs.z.ai/api-reference/api-code: codes 1113, 1308 (#11537, Pi 1.5), 1309, 1310, 1313, 1314 and 1316-1321,
+	// and their wording, which some adapters render without the code.
 	// Tested before invalid_request: Anthropic's low-credit error is typed `invalid_request_error`.
 	{ pattern: /insufficient_quota/i, category: "quota" },
 	{ pattern: /exceeded your current quota/i, category: "quota" },
@@ -70,7 +80,15 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 	{ pattern: /payment.?required/i, category: "quota" },
 	{ pattern: /usage.?limit/i, category: "quota" },
 	{ pattern: /available balance/i, category: "quota" },
-	{ pattern: /"code"\s*:\s*"?1308(?![0-9])|使用上限/i, category: "quota" },
+	{
+		pattern: /"code"\s*:\s*"?(?:1113|1308|1309|1310|1313|1314|1316|1317|1318|1319|1320|1321)(?![0-9])/i,
+		category: "quota",
+	},
+	{
+		pattern:
+			/使用上限|账户已欠费|套餐已到期|套餐已失效|公平使用策略|insufficient balance|(?:plan|enterprise) package has expired|Weekly\/Monthly Limit Exhausted|Fair Usage Policy/i,
+		category: "quota",
+	},
 
 	// Invalid request: Anthropic/OpenAI `invalid_request_error`, gRPC `INVALID_ARGUMENT`, Bedrock `ValidationException`
 	// and Pi's `Validation error:` prefix, LiteLLM `BadRequestError`.
