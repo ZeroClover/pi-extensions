@@ -88,3 +88,14 @@ A provider attempt that yields no text, or whose response announces a failure in
 #### Scenario: Provider returns a failure page as 200
 - **WHEN** a provider answers HTTP 200 with a body that states the URL could not be fetched
 - **THEN** the attempt is recorded as `error` with that reason and the next provider in the chain is tried
+
+### Requirement: Null arguments count as omitted
+An optional `web_fetch` parameter sent as `null` SHALL behave as if it had not been sent. A `null` `url` SHALL fail the call without contacting any provider.
+
+#### Scenario: Null optional parameters
+- **WHEN** the model calls `web_fetch` with a valid `url` and `offset: null`, `maxChars: null` and `provider: null`
+- **THEN** the page is fetched through the default chain and the result starts at character 0 with the default window
+
+#### Scenario: Null URL
+- **WHEN** the model calls `web_fetch` with `url: null`
+- **THEN** the call returns an error result and no provider is contacted
