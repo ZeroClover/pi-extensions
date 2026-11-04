@@ -1,5 +1,11 @@
 # @zeroclover/pi-web-access
 
+## 0.1.2
+
+### Patch Changes
+
+- A call that arrives while a key command is still running now waits for that command with a full timeout, instead of ending it and prompting the password manager again.
+
 ## 0.1.1
 
 ### Patch Changes
