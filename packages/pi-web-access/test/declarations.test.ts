@@ -1,4 +1,4 @@
-import { getCurrentTools } from "@earendil-works/pi-ai";
+import { getCurrentTools, getSystemMessageText } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it } from "vitest";
 import { type Pi, reply, text, toolCall } from "../../../tools/e2e/src/index.ts";
 import { deepseekResults } from "./fixtures/backends.ts";
@@ -29,7 +29,39 @@ function declarationIn(description: string, name: string): string {
 	return description.slice(start, next < 0 ? undefined : next);
 }
 
+/** The lines of the `<tools>` section of the system prompt in the first request the model received. */
+async function systemPromptToolLines(session: Pi): Promise<string[]> {
+	session.provider.respond(reply(text("ok")));
+	await session.prompt("hello");
+	const messages = session.provider.requests[0]?.context.messages ?? [];
+	const prompt = messages
+		.flatMap((message) => (message.role === "system" ? [getSystemMessageText(message)] : []))
+		.join("\n");
+	const start = prompt.indexOf("<tools>");
+	if (start < 0) throw new Error("the system prompt has no <tools> section");
+	return prompt.slice(start, prompt.indexOf("</tools>", start)).split("\n");
+}
+
 describe("tool declarations", () => {
+	// web-search: The system prompt names each tool once.
+	it("does not repeat a tool's name in its system prompt entry", async () => {
+		pi = await startWebAccess();
+		const lines = await systemPromptToolLines(pi);
+		const repeated = ["web_search", "web_fetch"].map((name) => {
+			const prefix = `- ${name}: `;
+			const entries = lines.filter((line) => line.startsWith(prefix));
+			return {
+				name,
+				entries: entries.length,
+				repeated: entries.filter((line) => line.slice(prefix.length).includes(name)),
+			};
+		});
+		expect(repeated).toEqual([
+			{ name: "web_search", entries: 1, repeated: [] },
+			{ name: "web_fetch", entries: 1, repeated: [] },
+		]);
+	});
+
 	// web-search: The search declaration stays small.
 	it("keeps both tools' descriptions and parameter schemas within 4000 characters", async () => {
 		pi = await startWebAccess();
@@ -74,6 +106,26 @@ describe("tool declarations", () => {
 			expect(pi.toolResults()[0]).toContain(
 				'{"provider":"ds","urls":["https://example.com/a","https://example.com/b"]}',
 			);
+		} finally {
+			await server.close();
+		}
+	});
+
+	// web-search: Null arguments count as omitted (Null argument from a codemode script).
+	it("treats a null argument from a codemode script as omitted instead of filtering on site:null", async () => {
+		const server = await startServer();
+		try {
+			server.route("/ds/tools/search", deepseekResults([{ url: "https://example.com/a" }]));
+			pi = await startWebAccess({
+				extensions: [PACKAGE, CODEMODE],
+				tools: ["codemode", "web_search", "web_fetch"],
+				config: { providers: { ds: { type: "deepseek", baseUrl: `${server.url}/ds` } } },
+				auth: { deepseek: { type: "api_key", key: "ds-key-0123456789" } },
+			});
+			const code = 'await tools.web_search({ query: "q", domains: null });\nreturn "searched";';
+			pi.provider.respond(reply(toolCall("codemode", { code })), reply(text("done")));
+			await pi.prompt("search in a script");
+			expect(server.at("/ds/tools/search").map((request) => request.body)).toEqual([{ query: "q", count: 5 }]);
 		} finally {
 			await server.close();
 		}

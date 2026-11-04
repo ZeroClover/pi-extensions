@@ -1,3 +1,4 @@
+import type { JsonObject } from "@earendil-works/pi-ai";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Pi } from "../../../tools/e2e/src/index.ts";
 import { deepseekPage, deepseekResults, exaSearch } from "./fixtures/backends.ts";
@@ -35,6 +36,31 @@ function page(length: number): string {
 	let text = "";
 	while (text.length < length) text += `${text.length}|`.padEnd(100, ".");
 	return text.slice(0, length);
+}
+
+const SEARCH_PATH = "/ds/tools/search";
+const SEARCH_URLS = ["https://example.com/a", "https://go.dev/b"];
+
+/** Runs one `web_search` per argument set and collects what each produced, so that one failure shows every call. */
+async function searches(session: Pi, argumentSets: JsonObject[]) {
+	const outcomes = [];
+	for (const args of argumentSets) {
+		const before = server.at(SEARCH_PATH).length;
+		const result = await call(session, "web_search", { query: "q", ...args });
+		const results = get(result.structured, "results");
+		outcomes.push({
+			args,
+			isError: result.isError,
+			error: result.isError ? result.text : undefined,
+			sent: server
+				.at(SEARCH_PATH)
+				.slice(before)
+				.map((request) => request.body),
+			urls: Array.isArray(results) ? results.map((entry: unknown) => get(entry, "url")) : [],
+			warnings: get(result.structured, "warnings"),
+		});
+	}
+	return outcomes;
 }
 
 describe("web_search", () => {
@@ -98,6 +124,59 @@ describe("web_search", () => {
 
 		await call(pi, "web_search", { query: "go", domains: '["reddit.com", "github.com"]', provider: "exa" });
 		expect(get(server.at("/exa/search")[1]?.body, "includeDomains")).toEqual(["reddit.com", "github.com"]);
+	});
+
+	// web-search: Null arguments count as omitted (Null domain filters, Null result count, Null recency and provider).
+	it("treats null arguments as omitted instead of filtering on site:null or failing, and keeps other coercion", async () => {
+		server.route(SEARCH_PATH, deepseekResults(SEARCH_URLS.map((url) => ({ url }))));
+		pi = await startWebAccess({ config: config(), auth: AUTH });
+		const omitted: JsonObject[] = [
+			{ domains: null, excludeDomains: null },
+			{ maxResults: null },
+			{ recency: null, provider: null },
+		];
+		const coerced: JsonObject = { maxResults: "3" };
+		const outcomes = await searches(pi, [...omitted, coerced]);
+		const succeeded = { isError: false, urls: SEARCH_URLS, warnings: [] };
+		expect(outcomes).toEqual([
+			...omitted.map((args) => ({ args, ...succeeded, sent: [{ query: "q", count: 5 }] })),
+			{ args: coerced, ...succeeded, sent: [{ query: "q", count: 3 }] },
+		]);
+	});
+
+	// web-search: Stringified array arguments are accepted (JSON text null, Text that is not a JSON array).
+	it('treats the string "null" as an omitted domain filter, and keeps a bare host as a filter', async () => {
+		server.route(SEARCH_PATH, deepseekResults(SEARCH_URLS.map((url) => ({ url }))));
+		pi = await startWebAccess({ config: config(), auth: AUTH });
+		const omitted: JsonObject[] = [{ domains: "null" }, { excludeDomains: "null" }];
+		const bareHost: JsonObject = { domains: "example.com" };
+		const outcomes = await searches(pi, [...omitted, bareHost]);
+		expect(outcomes).toEqual([
+			...omitted.map((args) => ({
+				args,
+				isError: false,
+				sent: [{ query: "q", count: 5 }],
+				urls: SEARCH_URLS,
+				warnings: [],
+			})),
+			{
+				args: bareHost,
+				isError: false,
+				sent: [{ query: "q site:example.com", count: 15 }],
+				urls: ["https://example.com/a"],
+				warnings: ["ds: 1 result outside the domain filters dropped"],
+			},
+		]);
+	});
+
+	// web-search: Null arguments count as omitted (Null query).
+	it("rejects a null query instead of searching for the word null", async () => {
+		server.route(SEARCH_PATH, deepseekResults(SEARCH_URLS.map((url) => ({ url }))));
+		pi = await startWebAccess({ config: config(), auth: AUTH });
+		const result = await call(pi, "web_search", { query: null });
+		expect(result.isError).toBe(true);
+		expect(result.text).toContain("query");
+		expect(server.at(SEARCH_PATH)).toEqual([]);
 	});
 
 	// web-search: Result text is bounded.
@@ -164,6 +243,26 @@ describe("web_fetch", () => {
 		expect(past.structured).toMatchObject({ content: "", truncated: false });
 		expect(get(past.structured, "nextOffset")).toBeUndefined();
 		expect(get(past.structured, "warnings")).toEqual(["offset 9000 is past the end of the page (6000 characters)"]);
+	});
+
+	// web-fetch: Null arguments count as omitted (Null optional parameters, Null URL).
+	it("treats null optional arguments as omitted and refuses a null URL without contacting a provider", async () => {
+		const long = page(30_000);
+		server.route("/ds/tools/fetch", deepseekPage("Long", long));
+		pi = await startWebAccess({ config: config(), auth: AUTH });
+		const result = await call(pi, "web_fetch", {
+			url: "https://example.com/long",
+			offset: null,
+			maxChars: null,
+			provider: null,
+		});
+		expect(result.isError).toBe(false);
+		expect(result.structured).toMatchObject({ provider: "ds", truncated: true, nextOffset: 20_000 });
+		expect(get(result.structured, "content")).toBe(long.slice(0, 20_000));
+		const requests = server.at("/ds/tools/fetch").length;
+		const refused = await call(pi, "web_fetch", { url: null });
+		expect(refused.isError).toBe(true);
+		expect(server.at("/ds/tools/fetch")).toHaveLength(requests);
 	});
 
 	// web-fetch: Empty content is a failure.

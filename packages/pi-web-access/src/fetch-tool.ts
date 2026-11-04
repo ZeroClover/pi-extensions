@@ -85,7 +85,7 @@ export function createFetchTool(state: WebAccessState) {
 		name: "web_fetch",
 		label: "Web Fetch",
 		description: "Read a web page as markdown or text through the configured providers; long pages continue by offset.",
-		promptSnippet: "web_fetch: read a URL as text; continue long pages with nextOffset",
+		promptSnippet: "Read a URL as text; continue long pages with nextOffset",
 		parameters,
 		outputSchema,
 		annotations: { readOnlyHint: true, openWorldHint: true },

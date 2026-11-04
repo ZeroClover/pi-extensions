@@ -63,15 +63,22 @@ const outputSchema = Type.Object({
 
 type SearchOutput = Static<typeof outputSchema>;
 
-/** Parses `domains` and `excludeDomains` sent as JSON-encoded strings, which Pi would otherwise wrap into one entry. */
+/**
+ * Omits null arguments, which models send for parameters they mean to leave out, and parses `domains` and
+ * `excludeDomains` sent as JSON-encoded strings, which Pi would otherwise wrap into one entry.
+ */
 function prepareArguments(args: unknown): SearchParams {
-	const prepared = isRecord(args) ? { ...args } : args;
+	// Pi drops null optional properties only after this function, and Value.Convert would first turn them into values.
+	const prepared = isRecord(args)
+		? Object.fromEntries(Object.entries(args).filter(([, value]) => value !== null))
+		: args;
 	if (isRecord(prepared)) {
 		for (const key of ["domains", "excludeDomains"]) {
 			const value = prepared[key];
 			if (typeof value !== "string") continue;
 			const parsed = parseJson(value);
-			prepared[key] = Array.isArray(parsed) ? parsed : [value];
+			if (parsed === null) delete prepared[key];
+			else prepared[key] = Array.isArray(parsed) ? parsed : [value];
 		}
 	}
 	const converted = Value.Convert(parameters, prepared);
@@ -174,7 +181,7 @@ export function createSearchTool(state: WebAccessState) {
 		name: "web_search",
 		label: "Web Search",
 		description: "Search the web through the configured providers and return results with titles, URLs and snippets.",
-		promptSnippet: "web_search: search the web; filter by site with domains",
+		promptSnippet: "Search the web; filter by site with domains",
 		promptGuidelines: [
 			"web_search: use domains to target a site (x.com/<handle> for an account's posts) and provider only when the user names one.",
 		],
