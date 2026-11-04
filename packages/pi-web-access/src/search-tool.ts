@@ -1,4 +1,3 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { Value } from "typebox/value";
@@ -6,6 +5,7 @@ import { isRecord, parseJson } from "./json.ts";
 import { ChainError, planChain, runChain } from "./routing.ts";
 import { normalizeSite, normalizeUrl, passesFilters } from "./sites.ts";
 import type { WebAccessState } from "./state.ts";
+import { stringEnum } from "./string-enum.ts";
 import {
 	ATTEMPT_OUTCOMES,
 	type Attempt,
@@ -26,7 +26,7 @@ const parameters = Type.Object({
 		Type.Array(Type.String(), { description: "Only these sites: host or host/path, e.g. go.dev/doc, x.com/<handle>" }),
 	),
 	excludeDomains: Type.Optional(Type.Array(Type.String(), { description: "Sites to leave out" })),
-	recency: Type.Optional(StringEnum(RECENCIES, { description: "Only pages from the last day, week, month or year" })),
+	recency: Type.Optional(stringEnum(RECENCIES, { description: "Only pages from the last day, week, month or year" })),
 	maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 20, description: "Number of results, default 5" })),
 	includeContent: Type.Optional(Type.Boolean({ description: "Also return page text excerpts" })),
 	provider: Type.Optional(Type.String({ description: "Configured provider name; only when the user asks for one" })),
@@ -36,7 +36,7 @@ type SearchParams = Static<typeof parameters>;
 
 const attemptSchema = Type.Object({
 	provider: Type.String(),
-	outcome: StringEnum(ATTEMPT_OUTCOMES),
+	outcome: stringEnum(ATTEMPT_OUTCOMES),
 	reason: Type.Optional(Type.String()),
 	latencyMs: Type.Optional(Type.Number()),
 });

@@ -16,6 +16,10 @@ interface Row {
 	text: string;
 	/** With `maxRetries: 0`, a retryable failure gives up at once and a non-retryable one is not retried. */
 	decision: "giving up after 0 retries" | "not retrying";
+	/**
+	 * The expected category, optionally followed by its evidence (`context_overflow: ContextWindowExceeded`): the value
+	 * is matched as a regular expression prefix of the notice's reason.
+	 */
 	category: string;
 	/** Diagnostics the adapter attaches to the failed message. */
 	diagnostics?: AssistantMessageDiagnostic[];
@@ -23,6 +27,9 @@ interface Row {
 
 const retried = "giving up after 0 retries";
 const stopped = "not retrying";
+
+/** The message Zhipu/Z.ai sends with code 1308, as reported in Pi's #11537. */
+const ZHIPU_LIMIT = "已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。";
 
 /** Real provider error texts: one per category and per provider family, then the documented precedence traps. */
 const ROWS: Row[] = [
@@ -129,6 +136,25 @@ const ROWS: Row[] = [
 		decision: stopped,
 		category: "quota",
 	},
+	// The evidence tells pi-retry's overflow rule from Pi's overflow pattern: the prose text matches both.
+	{
+		source: "LiteLLM class name alone: this rule, not Pi's pattern",
+		text: "litellm.ContextWindowExceededError",
+		decision: stopped,
+		category: "context_overflow: ContextWindowExceeded",
+	},
+	{
+		source: "underscore form: this rule, not Pi's pattern",
+		text: "context_window_exceeded",
+		decision: stopped,
+		category: "context_overflow: context_window_exceeded",
+	},
+	{
+		source: "LiteLLM pre-call check: Pi's pattern since Pi 1.5",
+		text: "litellm.ContextWindowExceededError: litellm.BadRequestError: litellm._pre_call_checks: Context Window exceeded for given call. No models have context window large enough for this call.",
+		decision: stopped,
+		category: "context_overflow: Pi's overflow patterns",
+	},
 	// Subscription and ChatGPT usage limits
 	{
 		source: "ChatGPT subscription (Pi's Codex adapter)",
@@ -187,6 +213,61 @@ const ROWS: Row[] = [
 	},
 	// Node transport
 	{ source: "Node fetch", text: "fetch failed", decision: retried, category: "transport" },
+	// Pi 1.5 addition to its non-retryable list (#11537), and the renderings its pattern misses.
+	{
+		source: "Zhipu/Z.ai 1308, code only",
+		text: '429 {"code":"1308","message":"x"}',
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "code only, numeric form from Pi's pattern, not observed in a response",
+		text: '429 {"code":1308,"message":"x"}',
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "Zhipu/Z.ai 1308 (OpenAI Completions adapter)",
+		text: `429: {"code":"1308","message":"${ZHIPU_LIMIT}"}`,
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "nested body, numeric code (probe variant)",
+		text: `429 {"error":{"code":1308,"message":"${ZHIPU_LIMIT}"}}`,
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "Zhipu/Z.ai 1308 without a status (Google adapter)",
+		text: `{"code":"1308","message":"${ZHIPU_LIMIT}"}`,
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "Zhipu/Z.ai 1308 (Anthropic adapter)",
+		text: `429 ${ZHIPU_LIMIT}`,
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "nested body (pi-messages adapter)",
+		text: `429 Too Many Requests: ${ZHIPU_LIMIT} (1308)`,
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "a longer code is not 1308",
+		text: '429 {"code":"13080","message":"x"}',
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "another Zhipu/Z.ai code is not 1308",
+		text: '429 {"code":"1302","message":"x"}',
+		decision: retried,
+		category: "rate_limit",
+	},
 	// Pi 1.4 additions to its retryable list
 	{
 		source: "proxy wrapping the Codex CLI",
