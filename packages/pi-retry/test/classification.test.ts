@@ -31,6 +31,252 @@ const stopped = "not retrying";
 /** The message Zhipu/Z.ai sends with code 1308, as reported in Pi's #11537. */
 const ZHIPU_LIMIT = "已达到 5 小时的使用上限。您的限额将在 2026-10-29 02:54:39 重置。";
 
+/**
+ * Zhipu/Z.ai's business codes, with the messages of https://docs.bigmodel.cn/cn/faq/api-code and
+ * https://docs.z.ai/api-reference/api-code, in the renderings Pi's adapters produce.
+ */
+const ZHIPU_ROWS: Row[] = [
+	// What must not change: transient codes, codes that only resemble a listed one, and failures already decided right.
+	...(
+		[
+			["1302", "code 1302 is transient"],
+			["1305", "code 1305 is transient"],
+			["1312", "code 1312 is on neither table"],
+			["1322", "code 1322 is on neither table"],
+			["13090", "a longer code is not 1309"],
+			["11130", "a longer code is not 1113"],
+			["13110", "a longer code is not 1311"],
+			["13150", "a longer code is not 1315"],
+		] as const
+	).map(
+		([code, source]): Row => ({
+			source,
+			text: `429 {"code":"${code}","message":"x"}`,
+			decision: retried,
+			category: "rate_limit",
+		}),
+	),
+	{
+		source: "1316 English reset time carries no time zone: no hint",
+		text: "429 Usage limit reached for the past 5 hours. Insufficient balance for extra usage. Resets at 2026-11-05 02:54:39.",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1302 wording",
+		text: "429 您的账户已达到速率限制，请您控制请求频率",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{ source: "1305 wording", text: "429 该模型当前访问量过大，请您稍后再试", decision: retried, category: "rate_limit" },
+	{
+		source: "1302 English wording",
+		text: "429 Rate limit reached for requests",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "1305 English wording",
+		text: "429 The service may be temporarily overloaded, please try again later",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "1200",
+		text: '500 {"error":{"code":"1200","message":"API 调用失败"}}',
+		decision: retried,
+		category: "server_error",
+	},
+	{
+		source: "1230",
+		text: '500 {"error":{"code":"1230","message":"API 调用流程出错"}}',
+		decision: retried,
+		category: "server_error",
+	},
+	{
+		source: "1234",
+		text: '500 {"error":{"code":"1234","message":"网络错误，错误id：20261104abc，请联系客服"}}',
+		decision: retried,
+		category: "server_error",
+	},
+	{
+		source: "1261 table wording: no Pi overflow pattern matches it",
+		text: "400 Prompt 超长",
+		decision: stopped,
+		category: "invalid_request: HTTP 400",
+	},
+	{
+		source: "1261 wording of Pi's CN endpoint pattern",
+		text: "400 Prompt exceeds max length",
+		decision: stopped,
+		category: "context_overflow: Pi's overflow patterns",
+	},
+	{
+		source: "1261 English wording: Pi's overflow pattern",
+		text: "400 Prompt too long",
+		decision: stopped,
+		category: "context_overflow: Pi's overflow patterns",
+	},
+	{
+		source: "1001",
+		text: '401 {"error":{"code":"1001","message":"Header 中未收到 Authentication 参数，无法进行身份验证"}}',
+		decision: stopped,
+		category: "auth: HTTP 401",
+	},
+	{
+		source: "1211",
+		text: '400 {"error":{"code":"1211","message":"模型不存在，请检查模型代码"}}',
+		decision: stopped,
+		category: "invalid_request: HTTP 400",
+	},
+	{
+		source: "1301",
+		text: '400 {"error":{"code":"1301","message":"系统检测到输入或生成内容可能包含不安全或敏感内容，请您避免输入易产生敏感内容的提示语，感谢您的配合"}}',
+		decision: stopped,
+		category: "invalid_request: HTTP 400",
+	},
+	// Account and plan limits, then access restrictions. The code alone must match, for a message the wording misses.
+	...["1113", "1309", "1310", "1313", "1314", "1316", "1317", "1318", "1319", "1320", "1321"].map(
+		(code): Row => ({
+			source: `code ${code} only`,
+			text: `429 {"code":"${code}","message":"x"}`,
+			decision: stopped,
+			category: "quota",
+		}),
+	),
+	...["1311", "1315"].map(
+		(code): Row => ({
+			source: `code ${code} only`,
+			text: `429 {"code":"${code}","message":"x"}`,
+			decision: stopped,
+			category: "auth",
+		}),
+	),
+	{
+		source: "numeric quota code, form from Pi's pattern",
+		text: '429 {"code":1309,"message":"x"}',
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "numeric auth code, form from Pi's pattern",
+		text: '429 {"code":1311,"message":"x"}',
+		decision: stopped,
+		category: "auth",
+	},
+	{
+		source: "documented body, quota",
+		text: '429 {"error":{"code":"1309","message":"您的 GLM Coding Plan 套餐已到期，暂无法使用，前往官方续订后即可恢复 https://bigmodel.cn/claude-code"}}',
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "documented body, auth",
+		text: '429 {"error":{"code":"1311","message":"当前订阅套餐暂未开放glm-x权限"}}',
+		decision: stopped,
+		category: "auth",
+	},
+	// The wording alone must match: Pi's Anthropic adapter drops the code from a top-level body.
+	{
+		source: "1113 wording without the code",
+		text: "429 您的账户已欠费，请充值后重试",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1309 wording without the code",
+		text: "429 您的 GLM Coding Plan 套餐已到期，暂无法使用，前往官方续订后即可恢复 https://bigmodel.cn/claude-code",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1313 wording without the code",
+		text: "429 您的账户当前使用模式不符合公平使用策略，请求频率已受到限制。如需恢复请前往个人中心-编程套餐总览-顶部申请解除限制",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1314 wording without the code",
+		text: "429 您的企业套餐已失效，请联系企业管理员。",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1311 wording without the code",
+		text: "429 当前订阅套餐暂未开放glm-x权限",
+		decision: stopped,
+		category: "auth",
+	},
+	{
+		source: "1315 wording without the code",
+		text: "429 该 API Key 仅限企业编程套餐场景使用，请到官网更换对应产品类型的 API Key",
+		decision: stopped,
+		category: "auth",
+	},
+	{
+		source: "1113 English wording without the code",
+		text: "429 Insufficient balance or no resource package. Please recharge.",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1309 English wording without the code",
+		text: "429 Your GLM Coding Plan package has expired and is temporarily unavailable. You can resume using it after renewing the subscription on the official website.",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1310 English wording without the code",
+		text: "429 Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-11-05 02:54:39",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1313 English wording without the code",
+		text: "429 Your account's current usage pattern does not comply with the Fair Usage Policy, and your request frequency has been limited. To restore access, please submit a request.",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1314 English wording without the code",
+		text: "429 Your enterprise package has expired. Please contact your enterprise administrator.",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "1311 English wording without the code",
+		text: "429 Your current subscription plan does not yet include access to glm-x",
+		decision: stopped,
+		category: "auth",
+	},
+	{
+		source: "1315 English wording without the code",
+		text: "429 This API Key is limited to enterprise coding package scenarios. Please go to the official website to replace the API Key of the corresponding product type.",
+		decision: stopped,
+		category: "auth",
+	},
+	{
+		source: "1113 wording with the code in parentheses (pi-messages adapter)",
+		text: "429 Too Many Requests: 您的账户已欠费，请充值后重试 (1113)",
+		decision: stopped,
+		category: "quota",
+	},
+	// `maxRetries: 0` never runs the wait, so this reads the hint from the notice and says nothing about scheduling;
+	// test/hints.test.ts covers the wait for a text hint.
+	{
+		source: "quota code: the hint is read, not its schedule (maxRetries 0)",
+		text: '429 {"code":"1309","message":"Try again in 2s"}',
+		decision: retried,
+		category: 'quota: "code":"1309; provider asked to wait 2s',
+	},
+	{
+		source: "auth code ignores a hint",
+		text: '429 {"code":"1311","message":"Try again in 2s"}',
+		decision: stopped,
+		category: "auth",
+	},
+];
+
 /** Real provider error texts: one per category and per provider family, then the documented precedence traps. */
 const ROWS: Row[] = [
 	// Anthropic
@@ -263,11 +509,12 @@ const ROWS: Row[] = [
 		category: "rate_limit",
 	},
 	{
-		source: "another Zhipu/Z.ai code is not 1308",
+		source: "a transient Zhipu/Z.ai code is not 1308",
 		text: '429 {"code":"1302","message":"x"}',
 		decision: retried,
 		category: "rate_limit",
 	},
+	...ZHIPU_ROWS,
 	// Pi 1.4 additions to its retryable list
 	{
 		source: "proxy wrapping the Codex CLI",
