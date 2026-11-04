@@ -74,45 +74,59 @@ function resolveTemplate(parts: TemplatePart[]): KeyResult {
 	return key === "" ? { ok: false, reason: "no credentials" } : { ok: true, key };
 }
 
+/** A key being resolved. `extendDeadline` gives a running command its full timeout again, starting now. */
+interface PendingKey {
+	result: Promise<KeyResult>;
+	extendDeadline(): void;
+}
+
 /**
- * Runs a key command for at most `timeoutMs`, the provider's attempt timeout: a password manager may wait for the
- * user's approval, and an attempt never outlasts that bound anyway. The command runs in its own process group, so
- * that a timeout ends it with everything it started, and the timeout settles the result at once rather than when
+ * Runs a key command until `timeoutMs` after the last attempt began waiting for it: a password manager may wait for
+ * the user's approval, and running the command again would prompt again. The command runs in its own process group,
+ * so that a timeout ends it with everything it started, and the timeout settles the result at once rather than when
  * the last process has released the output pipes.
  */
-function runCommand(command: string, timeoutMs: number): Promise<KeyResult> {
+function runCommand(command: string, timeoutMs: number): PendingKey {
 	const { SHELL: shell = "/bin/sh" } = process.env;
-	return new Promise((resolve) => {
-		const child = spawn(shell, ["-c", command], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
-		let stdout = "";
-		let stderr = "";
-		child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
-			stdout += chunk;
-		});
-		child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
-			stderr += chunk;
-		});
-		const timer = setTimeout(() => {
-			resolve({ ok: false, reason: `key command \`${command}\` timed out after ${timeoutMs} ms`, retry: true });
-			try {
-				if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
-			} catch {
-				// The group has already exited.
-			}
-		}, timeoutMs);
-		const fail = (detail: string): void => {
-			clearTimeout(timer);
-			resolve({ ok: false, reason: `key command \`${command}\` failed: ${detail}` });
-		};
-		child.on("error", (error) => fail(errorMessage(error)));
-		child.on("close", (code, signal) => {
-			clearTimeout(timer);
-			const key = stdout.trim();
-			if (code !== 0) fail(stderr.trim() || `exit ${code ?? signal}`);
-			else if (key === "") resolve({ ok: false, reason: `key command \`${command}\` printed nothing` });
-			else resolve({ ok: true, key });
-		});
+	const { promise, resolve } = Promise.withResolvers<KeyResult>();
+	const child = spawn(shell, ["-c", command], { detached: true, stdio: ["ignore", "pipe", "pipe"] });
+	let running = true;
+	const finish = (result: KeyResult): void => {
+		running = false;
+		clearTimeout(timer);
+		resolve(result);
+	};
+	let stdout = "";
+	let stderr = "";
+	child.stdout.setEncoding("utf8").on("data", (chunk: string) => {
+		stdout += chunk;
 	});
+	child.stderr.setEncoding("utf8").on("data", (chunk: string) => {
+		stderr += chunk;
+	});
+	const timer = setTimeout(() => {
+		finish({ ok: false, reason: `key command \`${command}\` timed out after ${timeoutMs} ms`, retry: true });
+		try {
+			if (child.pid !== undefined) process.kill(-child.pid, "SIGTERM");
+		} catch {
+			// The group has already exited.
+		}
+	}, timeoutMs);
+	const fail = (detail: string): void => finish({ ok: false, reason: `key command \`${command}\` failed: ${detail}` });
+	child.on("error", (error) => fail(errorMessage(error)));
+	child.on("close", (code, signal) => {
+		const key = stdout.trim();
+		if (code !== 0) fail(stderr.trim() || `exit ${code ?? signal}`);
+		else if (key === "") finish({ ok: false, reason: `key command \`${command}\` printed nothing` });
+		else finish({ ok: true, key });
+	});
+	return {
+		result: promise,
+		extendDeadline: () => {
+			// refresh() reactivates a timer that has fired, which would signal a process group whose id may be reused.
+			if (running) timer.refresh();
+		},
+	};
 }
 
 /**
@@ -146,25 +160,27 @@ function findModel(registry: ModelRegistry, entry: ProviderEntry): Model<Api> | 
 
 /** Credentials and their status for one session; key expressions are resolved once and cached. */
 export class CredentialStore {
-	private readonly keys = new Map<string, Promise<KeyResult>>();
+	private readonly keys = new Map<string, PendingKey>();
 	private readonly settled = new Map<string, KeyResult>();
 
 	private resolveKey(entry: ProviderEntry, expression: string): Promise<KeyResult> {
-		let pending = this.keys.get(entry.name);
-		if (!pending) {
-			const parsed = parseKeyExpression(expression);
-			pending = (
-				parsed.kind === "command"
-					? runCommand(parsed.command, entry.timeoutMs)
-					: Promise.resolve(resolveTemplate(parsed.parts))
-			).then((result) => {
-				this.settled.set(entry.name, result);
-				if (!result.ok && result.retry) this.keys.delete(entry.name);
-				return result;
-			});
-			this.keys.set(entry.name, pending);
+		const pending = this.keys.get(entry.name);
+		if (pending) {
+			pending.extendDeadline();
+			return pending.result;
 		}
-		return pending;
+		const parsed = parseKeyExpression(expression);
+		const started: PendingKey =
+			parsed.kind === "command"
+				? runCommand(parsed.command, entry.timeoutMs)
+				: { result: Promise.resolve(resolveTemplate(parsed.parts)), extendDeadline: () => {} };
+		const result = started.result.then((settled) => {
+			this.settled.set(entry.name, settled);
+			if (!settled.ok && settled.retry) this.keys.delete(entry.name);
+			return settled;
+		});
+		this.keys.set(entry.name, { result, extendDeadline: started.extendDeadline });
+		return result;
 	}
 
 	/**
@@ -188,8 +204,8 @@ export class CredentialStore {
 		let resolvedBase: string | undefined;
 		if (entry.apiKey !== undefined) {
 			let key = await untilAborted(this.resolveKey(entry, entry.apiKey), signal);
-			// A timeout reported while this attempt still runs belongs to a command an earlier, cancelled call started;
-			// this attempt gets its own command and its own time.
+			// A timeout reported while this attempt still runs means it joined as the command's deadline expired, too late
+			// to move it; this attempt runs its own command, which may prompt again.
 			if (!key.ok && key.retry) key = await untilAborted(this.resolveKey(entry, entry.apiKey), signal);
 			if (!key.ok) throw new ProviderSkip(key.reason);
 			apiKey = key.key;

@@ -68,7 +68,7 @@ A provider's key SHALL come from `apiKey` when present, otherwise from the Pi pr
 - **THEN** the provider is skipped with a reason that quotes the command's error and `/web-access` shows the failure
 
 #### Scenario: Command times out
-- **WHEN** the command has not finished within the provider's `timeoutMs` (for example while a password manager waits for approval)
+- **WHEN** the command has not finished within the provider's `timeoutMs` of the last attempt that began waiting for it (for example while a password manager waits for approval)
 - **THEN** the attempt fails as a timeout, `/web-access` shows that the key command timed out, and the next use of the provider runs the command again
 
 #### Scenario: Environment variable
