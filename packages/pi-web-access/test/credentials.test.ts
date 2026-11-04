@@ -1,11 +1,11 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Pi, reply, type TempBin, tempBin, toolCall, waitFor } from "../../../tools/e2e/src/index.ts";
+import { type Pi, reply, type TempBin, tempBin, text, toolCall, waitFor } from "../../../tools/e2e/src/index.ts";
 import { alphaSearch, exaSearch, message, responsesStream, webSearchCall } from "./fixtures/backends.ts";
 import { type FixtureServer, startServer } from "./fixtures/server.ts";
-import { call, get, piProvider, startWebAccess } from "./fixtures/session.ts";
+import { CODEMODE, call, get, PACKAGE, piProvider, startWebAccess } from "./fixtures/session.ts";
 
 let pi: Pi | undefined;
 let server: FixtureServer;
@@ -30,6 +30,63 @@ async function command(session: Pi): Promise<string> {
 		.slice(before)
 		.map((notice) => notice.message)
 		.join("\n");
+}
+
+/** A key command that counts its runs in a file, takes `seconds`, then prints a key. Returns the file's path. */
+async function slowVault(name: string, seconds: number): Promise<string> {
+	const counter = join(bin.dir, `${name}-runs`);
+	await bin.write(name, `#!/bin/sh\necho run >> '${counter}'\nsleep ${seconds}\nprintf 'cmd-key-0123456789\\n'\n`);
+	return counter;
+}
+
+async function runCount(counter: string): Promise<number> {
+	return (await readFile(counter, "utf8")).trim().split("\n").length;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Waits until `ms` after `since`. A scenario's timing only means something if that moment comes before a deadline, so
+ * a machine already past `latest` fails here, saying so, rather than later with a misleading wrong result.
+ */
+async function reachMoment(since: number, ms: number, latest: number): Promise<void> {
+	await delay(ms - (performance.now() - since));
+	const reached = Math.round(performance.now() - since);
+	if (reached > latest) throw new Error(`too slow for this scenario: the ${ms} ms mark came at ${reached} ms`);
+}
+
+/** The pid a command wrote to `path`, once written: the shell creates the file before the write. */
+function writtenPid(path: string): number | undefined {
+	if (!existsSync(path)) return undefined;
+	const pid = readFileSync(path, "utf8").match(/^(\d+)\n/)?.[1];
+	return pid === undefined ? undefined : Number(pid);
+}
+
+/** Has the model call `web_search`, and cancels the call once the tool runs and `ready` holds, returning that time. */
+async function cancelledSearch(session: Pi, ready: () => boolean = () => true): Promise<number> {
+	let running = false;
+	const unsubscribe = session.session.subscribe((event) => {
+		if (event.type === "tool_execution_start") running = true;
+	});
+	session.provider.respond(reply(toolCall("web_search", { query: "q" })));
+	const cancelled = session.prompt("search");
+	await waitFor("the tool call to wait for its key", () => running && ready());
+	const readyAt = performance.now();
+	unsubscribe();
+	await session.session.abort();
+	await cancelled;
+	return readyAt;
+}
+
+function isAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 describe("credentials", () => {
@@ -114,26 +171,15 @@ describe("credentials", () => {
 		}
 		expect(status).toContain(timedOut);
 		// The timeout ended the command together with the process it started.
-		const [child] = (await readFile(pids, "utf8")).trim().split("\n").map(Number);
-		await waitFor(
-			"the command's child to exit",
-			() => {
-				try {
-					process.kill(child ?? 0, 0);
-					return false;
-				} catch {
-					return true;
-				}
-			},
-			1500,
-		);
+		const child = await waitFor("the command to report its child", () => writtenPid(pids));
+		await waitFor("the command's child to exit", () => !isAlive(child), 1500);
 		await call(pi, "web_search", { query: "q" });
 		expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["run", "run"]);
 		expect(server.requests).toEqual([]);
 	});
 
-	// provider-routing: Timeouts and cancellation; a key command left running by an aborted call does not cut the
-	// next call's own timeout short.
+	// provider-routing: Timeouts and cancellation; a call after an abort joins the command the aborted call left
+	// running and gives it its full timeout, instead of running out the old command's remaining time.
 	it("gives a call after an abort its full timeout instead of the old command's remaining time", async () => {
 		const counter = join(bin.dir, "stuck-runs");
 		await bin.write("stuck-vault", `#!/bin/sh\necho run >> '${counter}'\nsleep 4\n`);
@@ -154,7 +200,123 @@ describe("credentials", () => {
 		const result = await call(session, "web_search", { query: "q" });
 		expect(performance.now() - started).toBeGreaterThanOrEqual(2000);
 		expect(result.text).toBe("web_search: provider stuck failed: timeout after 2000 ms");
-		expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["run", "run"]);
+		expect((await readFile(counter, "utf8")).trim().split("\n")).toEqual(["run"]);
+	});
+
+	// provider-routing: Timeouts and cancellation (Key command already running).
+	it("lets a call after an abort use the running key command instead of timing out on a second run", async () => {
+		const counter = await slowVault("slow", 3.5);
+		server.route("/search", exaSearch([{ url: "https://example.com/a" }]));
+		pi = await startWebAccess({
+			config: { providers: { slow: { type: "exa", apiKey: "!slow", baseUrl: server.url, timeoutMs: 3000 } } },
+			env: { PATH: bin.path() },
+		});
+		const startedAt = await cancelledSearch(pi, () => existsSync(counter));
+		// 1.5 s into the command: well before its old deadline, and with 2 s of work left.
+		await reachMoment(startedAt, 1500, 2500);
+		const result = await call(pi, "web_search", { query: "q" });
+		expect({
+			error: result.isError ? result.text : undefined,
+			keys: server.at("/search").map((request) => request.headers["x-api-key"]),
+			runs: await runCount(counter),
+		}).toEqual({ error: undefined, keys: ["cmd-key-0123456789"], runs: 1 });
+	});
+
+	// provider-routing: Timeouts and cancellation (Key command already running).
+	it("keeps a key command running for a parallel call when the call that started it times out", async () => {
+		const counter = await slowVault("slow", 3.5);
+		server.route("/search", exaSearch([{ url: "https://example.com/a" }]));
+		server.route("/gap/search", { ...exaSearch([{ url: "https://example.com/g" }]), delayMs: 2000 });
+		pi = await startWebAccess({
+			extensions: [PACKAGE, CODEMODE],
+			tools: ["codemode", "web_search", "web_fetch"],
+			config: {
+				providers: {
+					vault: { type: "exa", apiKey: "!slow", baseUrl: server.url, timeoutMs: 3000 },
+					gap: { type: "exa", apiKey: "gap-key-0123456789", baseUrl: `${server.url}/gap` },
+				},
+			},
+			env: { PATH: bin.path() },
+		});
+		// Scripts have no timers, so a slow search on another provider puts 2 s between the two calls.
+		const code = [
+			'const settle = (search) => search.then((r) => "ok " + r.provider, (e) => e.message);',
+			'const first = settle(tools.web_search({ query: "a", provider: "vault" }));',
+			'await tools.web_search({ query: "gap", provider: "gap" });',
+			'const second = await settle(tools.web_search({ query: "b", provider: "vault" }));',
+			"return { first: await first, second };",
+		].join("\n");
+		pi.provider.respond(reply(toolCall("codemode", { code })), reply(text("done")));
+		await pi.prompt("search twice");
+		expect({ output: pi.toolResults()[0]?.split("Output:\n")[1], runs: await runCount(counter) }).toEqual({
+			output: '{"first":"web_search: provider vault failed: timeout after 3000 ms","second":"ok vault"}',
+			runs: 1,
+		});
+	});
+
+	// provider-routing: Timeouts and cancellation (Key command already running).
+	it("moves the key command's deadline again for every call that joins it", async () => {
+		const counter = await slowVault("slow", 3.2);
+		server.route("/search", exaSearch([{ url: "https://example.com/a" }]));
+		pi = await startWebAccess({
+			config: { providers: { slow: { type: "exa", apiKey: "!slow", baseUrl: server.url, timeoutMs: 2000 } } },
+			env: { PATH: bin.path() },
+		});
+		let joinedAt = await cancelledSearch(pi, () => existsSync(counter));
+		await reachMoment(joinedAt, 800, 1500);
+		joinedAt = await cancelledSearch(pi);
+		await reachMoment(joinedAt, 800, 1500);
+		joinedAt = await cancelledSearch(pi);
+		await reachMoment(joinedAt, 800, 1500);
+		const result = await call(pi, "web_search", { query: "q" });
+		expect({ error: result.isError ? result.text : undefined, runs: await runCount(counter) }).toEqual({
+			error: undefined,
+			runs: 1,
+		});
+	});
+
+	// provider-routing: Timeouts and cancellation (Cancelled call and no later call). The lower bound on the child's
+	// life tells this apart from ending the command as soon as nobody waits for it, which would prompt again next time.
+	it("leaves a cancelled call's key command running until its deadline, then ends it", async () => {
+		const pids = join(bin.dir, "cancelled-pids");
+		await bin.write("cancelled-vault", `#!/bin/sh\nsleep 30 &\necho $! >> '${pids}'\nwait\n`);
+		pi = await startWebAccess({
+			config: {
+				providers: { vault: { type: "exa", apiKey: "!cancelled-vault", baseUrl: server.url, timeoutMs: 1500 } },
+			},
+			env: { PATH: bin.path() },
+		});
+		const startedAt = performance.now();
+		await cancelledSearch(pi, () => writtenPid(pids) !== undefined);
+		const child = await waitFor("the command to report its child", () => writtenPid(pids));
+		await waitFor("the command's child to exit", () => !isAlive(child), 4000);
+		expect(performance.now() - startedAt).toBeGreaterThanOrEqual(1400);
+		expect(await command(pi)).toContain(
+			"vault (exa; key from apiKey): failed: key command `cancelled-vault` timed out after 1500 ms",
+		);
+	});
+
+	// provider-routing: Timeouts and cancellation (Key command reaching its deadline as the attempt begins).
+	it("gives a call that follows a timeout at once its full time, even as the old command's deadline expires", async () => {
+		await bin.write("stuck-vault", "#!/bin/sh\nsleep 30\n");
+		pi = await startWebAccess({
+			config: { providers: { stuck: { type: "exa", apiKey: "!stuck-vault", baseUrl: server.url, timeoutMs: 1000 } } },
+			env: { PATH: bin.path() },
+		});
+		const startedAt = new Map<string, number>();
+		const durations: number[] = [];
+		pi.session.subscribe((event) => {
+			if (event.type === "tool_execution_start") startedAt.set(event.toolCallId, performance.now());
+			if (event.type === "tool_execution_end")
+				durations.push(performance.now() - (startedAt.get(event.toolCallId) ?? 0));
+		});
+		const search = () => reply(toolCall("web_search", { query: "q" }));
+		pi.provider.respond(search(), search(), search(), reply(text("done")));
+		await pi.prompt("search three times");
+		const timedOut = "web_search: provider stuck failed: timeout after 1000 ms";
+		expect(pi.toolResults()).toEqual([timedOut, timedOut, timedOut]);
+		// Timers have millisecond precision, so a call measured from its start event can read just under 1000 ms.
+		expect(durations.filter((duration) => duration < 990)).toEqual([]);
 	});
 
 	// web-access-configuration: Key expression syntax (Literal key, Environment variable).
