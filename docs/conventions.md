@@ -33,7 +33,7 @@ Forbidden: `any`, non-null assertions (`x!`), `@ts-ignore`, `@ts-expect-error`, 
 ## Dependencies
 
 - Host packages: `peerDependencies` with `"*"`. Never `dependencies`, never bundled.
-- Prefer Node built-ins and the host packages (`@earendil-works/pi-tui` for rendering, `@earendil-works/pi-ai` for message types and `StringEnum`, `typebox` for schemas) before adding a dependency.
+- Prefer Node built-ins and the host packages (`@earendil-works/pi-tui` for rendering, `@earendil-works/pi-ai` for message types, `typebox` for schemas) before adding a dependency.
 - Add a runtime dependency only when it removes real complexity. Pin a caret range, add it to the package (not the root), and run `pnpm install` so the lockfile updates.
 - Dev tooling (TypeScript, Biome, Vitest, `@types/node`, and `yaml` for the release tooling) lives only at the root.
 
@@ -50,7 +50,7 @@ These follow from Pi's extension contract. Read `docs/pi-reference.md` for the s
 
 ### Tools
 
-- Define tools with `defineTool()` and TypeBox schemas. Give every parameter a `description`. Use `StringEnum` from `@earendil-works/pi-ai` for enums and never `Type.Unknown()` (it serializes to `{}`, which some providers reject).
+- Define tools with `defineTool()` and TypeBox schemas. Give every parameter a `description`. For enums, use a local helper that builds `{ type: "string", enum }` with `Type.Unsafe`: since Pi 1.5 the published types of `StringEnum` from `@earendil-works/pi-ai` do not work inside `Type.Object`, and a `Type.Union` of `Type.Literal` serializes to `anyOf`/`const`, which some providers reject. Never use `Type.Unknown()` (it serializes to `{}`, which some providers reject).
 - Return `content` (model-facing) and `details` (rendering or state). Use `details: undefined` when there is nothing structured. Throw to produce an error result.
 - Truncate large output and tell the model where to read the rest. Declare `outputSchema` and return `structuredContent` when the result is data.
 - Use `executionMode: "sequential"` when tools share mutable in-memory state. Wrap read-modify-write of files with `withFileMutationQueue()`.

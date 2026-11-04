@@ -1,9 +1,9 @@
-import { StringEnum } from "@earendil-works/pi-ai";
 import { defineTool } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
 import { ChainError, planChain, runChain } from "./routing.ts";
 import { parseUrl } from "./sites.ts";
 import type { WebAccessState } from "./state.ts";
+import { stringEnum } from "./string-enum.ts";
 import { ATTEMPT_OUTCOMES, ProviderError, type ProviderFetchResult } from "./types.ts";
 
 const DEFAULT_MAX_CHARS = 20_000;
@@ -23,7 +23,7 @@ const outputSchema = Type.Object({
 	finalUrl: Type.Optional(Type.String()),
 	title: Type.Optional(Type.String()),
 	content: Type.String(),
-	extraction: StringEnum(["verbatim", "model"]),
+	extraction: stringEnum(["verbatim", "model"]),
 	totalChars: Type.Optional(Type.Number()),
 	truncated: Type.Boolean(),
 	nextOffset: Type.Optional(Type.Number()),
@@ -31,7 +31,7 @@ const outputSchema = Type.Object({
 	attempts: Type.Array(
 		Type.Object({
 			provider: Type.String(),
-			outcome: StringEnum(ATTEMPT_OUTCOMES),
+			outcome: stringEnum(ATTEMPT_OUTCOMES),
 			reason: Type.Optional(Type.String()),
 			latencyMs: Type.Optional(Type.Number()),
 		}),

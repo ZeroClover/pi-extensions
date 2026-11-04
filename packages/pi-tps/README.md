@@ -75,7 +75,7 @@ Fields are separated by ` | ` (see `separator` in [Configuration](#configuration
 | `run 12.3s` | Working | Elapsed time since the run started, including tool execution. |
 | `3 runs in 4m 12s` | Idle | Completed runs (prompts) on the branch and their summed wall-clock time (`1 run in 18.4s` for one). |
 | `↑40K ◎88%` | Idle | Total input tokens sent across the session (including cached tokens, since each request re-sends the conversation), with `◎` showing the share read from the prompt cache when non-zero. Omitted when no input was reported. |
-| `$0.050` | Idle | Total session cost in US dollars, shown when the model has pricing in Pi. |
+| `$0.050` | Idle | Total session cost in US dollars, shown when Pi reports a cost for the model. |
 
 ### Markers
 
@@ -212,15 +212,16 @@ All durations use a monotonic clock (`performance.now`).
 
 ### Thinking by backend
 
-How much of the thinking phase pi-tps can time depends on what Pi's provider adapter exposes (Pi 1.4):
+How much of the thinking phase pi-tps can time depends on what Pi's provider adapter exposes (Pi 1.5):
 
 | Backend | Start of a thinking block | Hidden reasoning | `usage.reasoning` |
 |---|---|---|---|
-| Anthropic | real (`content_block_start` of a `thinking` or `redacted_thinking` block) | timed | only when the response carries `thinking_tokens`, else absent |
+| Anthropic (and OpenRouter's `~anthropic/claude-*-latest` aliases) | real (`content_block_start` of a `thinking` or `redacted_thinking` block) | timed | only when the response carries `thinking_tokens`, else absent |
 | OpenAI Responses (and Azure, Codex) | real (reasoning item added), also when no summary is requested | timed | always, `0` when not reported |
 | OpenAI Completions (Ollama, llama.cpp, vLLM, most proxies) | synthesised at the first thinking chunk | not visible | always, `0` when not reported (Ollama and llama.cpp never report it) |
 | Google (Gemini, Vertex) | synthesised at the first thinking chunk | not visible | always, `0` when not reported |
 | Mistral, Amazon Bedrock | synthesised at the first thinking chunk | not visible | absent |
+| Pi Messages (Radius) | as the server's stream sends it | as the server's stream sends it | as the server reports it |
 
 When the start event is synthesised at the first thinking chunk, any thinking before that chunk remains in TTFT. That delay is negligible for models that stream chain-of-thought token by token, but can be several seconds for models that stream summaries (such as Gemini), making their measured rate an upper bound.
 
