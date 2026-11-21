@@ -8,6 +8,19 @@ allowBuilds:
   esbuild: false
   protobufjs: false
 
+# The Pi host release pinned in package.json, newer than pnpm's minimumReleaseAge
+# (one day) when it was adopted. pnpm adds these entries on install; remove them
+# once the release is older than the cutoff.
+minimumReleaseAgeExclude:
+  - "@earendil-works/pi-agent-core@1.6.0"
+  - "@earendil-works/pi-ai@1.6.0"
+  - "@earendil-works/pi-codemode@1.6.0"
+  - "@earendil-works/pi-coding-agent@1.6.0"
+  - "@earendil-works/pi-mcp@1.6.0"
+  - "@earendil-works/pi-schema@1.6.0"
+  - "@earendil-works/pi-telemetry@1.6.0"
+  - "@earendil-works/pi-tui@1.6.0"
+
 # Native release management (docs/releases.md): agent-authored change intents in
 # .changeset/, local `pnpm version -r` preparation, committed per-package
 # CHANGELOG.md files, and the consumption ledger .changeset/ledger.yaml.

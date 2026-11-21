@@ -14,7 +14,8 @@ const MAX_OUTPUT_BYTES = 1024 * 1024;
 
 /**
  * `execFile` rather than Pi's `pi.exec`: `pi.exec` reports a missing binary as exit code 1, which is also
- * "no rewrite", and a signal exit as code 0. Never rejects, including for arguments `execFile` refuses.
+ * "no rewrite", and folds timeouts and cancellation into one `killed` flag. Never rejects, including for arguments
+ * `execFile` refuses.
  */
 export const runFile: Run = (file, args, options) =>
 	new Promise((resolve) => {
