@@ -99,7 +99,7 @@ export const DETERMINISTIC_RULES: readonly Rule<DeterministicCategory>[] = [
 ];
 
 /**
- * Pi's Codex adapter (`openai-codex-responses.js:1245-1257`) renders a JSON error body as this message on every 429,
+ * Pi's Codex adapter (`openai-codex-responses.js:1268-1280`) renders a JSON error body as this message on every 429,
  * a transient `rate_limit_exceeded` included, and on any status whose error `code`, or `type` when `code` is absent,
  * contains `usage_limit_reached`, `usage_not_included` or `rate_limit_exceeded`. It appends ` Try again in ~N min.`
  * only when the body has `resets_at`; `~0 min` means the reset is under 30 s away or already past. Anchored to the
@@ -137,15 +137,18 @@ export const TRANSIENT_RULES: readonly Rule<TransientCategory>[] = [
 	// Transport: Pi's network, fetch, socket, WebSocket and premature-stream-end wording, Node error codes, LiteLLM
 	// `APIConnectionError`. Pi 1.4: the Codex CLI disconnect relayed by proxies (#11057), gateway stream interruptions
 	// (#10920), and node-fetch system errors such as the google-vertex ADC token refresh (#10996).
+	// Pi 1.5.1: dropped Anthropic streams relayed by gateways (#11879). Pi 1.6: gateway `Connection closed.`
+	// (#12064), bare Node codes (#12128), the Codex WebSocket lifetime limit (#12124).
 	{ pattern: /fetch failed|network.?error|getaddrinfo/i, category: "transport" },
-	{ pattern: /connection.?(?:error|refused|lost|reset)/i, category: "transport" },
-	{ pattern: /ECONNRESET|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EPIPE/i, category: "transport" },
+	{ pattern: /connection.?(?:error|refused|lost|reset|closed)/i, category: "transport" },
+	{ pattern: /ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EPIPE/i, category: "transport" },
 	{ pattern: /socket hang up|socket connection was closed|other side closed/i, category: "transport" },
 	{ pattern: /upstream.?connect|reset before headers/i, category: "transport" },
 	{ pattern: /terminated/i, category: "transport" },
 	{ pattern: /stream ended before|ended without/i, category: "transport" },
 	{ pattern: /http2 request did not get a response|pending stream has been canceled/i, category: "transport" },
-	{ pattern: /websocket.?(?:closed|error)/i, category: "transport" },
+	{ pattern: /websocket.?(?:closed|error|connection.?limit.?reached)/i, category: "transport" },
+	{ pattern: /cut short after the reply had begun/i, category: "transport" },
 	{ pattern: /stream disconnected before completion/i, category: "transport" },
 	{ pattern: /stream was interrupted|http\/?2 stream failed/i, category: "transport" },
 	{ pattern: /request to \S+ failed, reason:/i, category: "transport" },

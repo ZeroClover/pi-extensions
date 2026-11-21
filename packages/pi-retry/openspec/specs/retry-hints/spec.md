@@ -108,8 +108,12 @@ Header hints from `after_provider_response` SHALL be used only when the extensio
 - **THEN** the 45 s hint is used
 
 #### Scenario: Warming enabled
-- **WHEN** `cacheWarming` is `streaming` (Pi's default) or a `cache_warming_decision` event has fired in the session
-- **THEN** no header capture is used for the rest of the session and the failure falls back to diagnostics and text
+- **WHEN** `cacheWarming` is `idle` (Pi's default) or `streaming`
+- **THEN** no header capture is used while the setting stays so, and the failure falls back to diagnostics and text
+
+#### Scenario: Warming decision
+- **WHEN** a `cache_warming_decision` event has fired in the session
+- **THEN** no header capture is used for the rest of the session, whatever `cacheWarming` is set to afterwards, and the failure falls back to diagnostics and text
 
 #### Scenario: Provider-level retries enabled
 - **WHEN** `retry.provider.maxRetries` is 2 and the window holds a 429 capture followed by a 200 capture before a mid-stream failure

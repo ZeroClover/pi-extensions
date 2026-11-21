@@ -56,10 +56,12 @@ The attempt counter resets after a successful response, an aborted response or r
 | Type a message during a backoff wait | Ends the wait within 1 s and sends the retry together with your message. |
 | Type a message during a provider-requested wait | Keeps counting down and sends your message with the retry at the provider's deadline. Cancel first to drop the retry. |
 | Switch, start, or fork a session | Ends the wait before Pi replaces the session; no retry is sent. |
-| Shutdown or programmatic reload | Ends the wait immediately; no retry is sent. |
-| Abort from an RPC client | pi-retry cannot observe this abort, so the wait runs to completion and Pi then discards the retry. The empty failed message is hidden, and the `pi-retry` entry is followed by one with `outcome: "cancelled"`. Use `/retry cancel` to stop the wait itself. |
+| Quit Pi (Ctrl+D, a double Ctrl+C, `/quit`, SIGTERM, SIGHUP on non-Windows systems, or an RPC client closing its input) | If Pi starts aborting during the wait, it waits out the countdown. The failed assistant message is hidden from context; `pi-retry` records `scheduled` then `cancelled`, without sending the retry. In print, JSON and RPC modes, a second handled signal during the wait exits immediately without recording that attempt. |
+| Abort from an RPC client | pi-retry cannot observe this abort, so the wait runs to completion and Pi then discards the retry. The failed assistant message is hidden, and the `pi-retry` entry is followed by one with `outcome: "cancelled"`. Use `/retry cancel` to stop the wait itself. |
 
-Cancelling a wait also aborts the run so queued messages do not fire before the provider's deadline; Pi then handles queued messages as on any abort. Pi refuses `/reload` while the session is busy (including during a wait): cancel first, then reload.
+For a keyboard quit, Pi drains terminal input and closes the screen before it aborts. If the countdown expires during that drain, the retry can start. If it fails and starts another countdown before Pi aborts, Pi waits that one out with the screen closed. To quit immediately without retrying, cancel first with Escape or `/retry cancel`.
+
+Cancelling a wait also aborts the run so queued messages do not fire before the provider's deadline; Pi then handles queued messages as on any abort. Pi refuses `/reload`, `ctx.reload()` from an extension command, and SDK reloads via `AgentSession.reload()` while the session is busy (including during a wait): cancel first, then reload.
 
 ## Configuration
 
@@ -101,7 +103,7 @@ A missing file uses the defaults. Invalid JSON, unknown keys, out-of-range value
 | `overloaded` | yes | HTTP 529, `overloaded_error`, `The model is overloaded`, `model is at capacity`, `server_busy`, `high demand` |
 | `server_error` | yes | other 5xx, `api_error`, `server_error`, `Internal server error`, `UNAVAILABLE`, `ServiceUnavailableException`, `Provider returned error`, `upstream_request_failed`, `upstream_stream_read_error`, `you can retry your request` |
 | `timeout` | yes | HTTP 408/504/524, `timed out`, `timeout`, `DEADLINE_EXCEEDED`, `ModelTimeoutException` |
-| `transport` | yes | `fetch failed`, `ECONNRESET`, `ENOTFOUND`, `socket hang up`, `other side closed`, `terminated`, `stream ended before …`, `stream disconnected before completion`, `stream was interrupted`, `HTTP/2 stream failed`, `request to <url> failed, reason:`, `websocket closed`, `APIConnectionError` |
+| `transport` | yes | `fetch failed`, `ECONNRESET`, `ECONNABORTED`, `ENOTFOUND`, `socket hang up`, `other side closed`, `terminated`, `stream ended before …`, `stream disconnected before completion`, `stream was interrupted`, `HTTP/2 stream failed`, `request to <url> failed, reason:`, `websocket closed`, `websocket connection limit reached`, `connection closed`, `cut short after the reply had begun`, `APIConnectionError` |
 | `unknown` | yes | anything that matches no rule; treated as transient and retried with backoff |
 | `quota` | only with an accepted hint | HTTP 402, `insufficient_quota`, `exceeded your current quota`, `billing`, `out of budget`, `BudgetExceededError`, `Payment Required`, `usage limit` (ChatGPT's message with `Try again in ~N min.`, OpenCode), `Codex error: The usage limit has been reached` (a Codex usage limit relayed in the stream), `subscription_sharing_usage_limit_exceeded`, `subscription_sharing_workplace_individual_usage_limit_exceeded`, `available balance`, Zhipu/Z.ai codes `1113`, `1308`-`1310`, `1313`, `1314`, `1316`-`1321` (as `"code":"1308"` or `"code":1308`) and their wording: `使用上限`, `账户已欠费`, `套餐已到期`, `套餐已失效`, `公平使用策略`, `insufficient balance`, `plan package has expired`, `enterprise package has expired`, `Weekly/Monthly Limit Exhausted`, `Fair Usage Policy` |
 | `auth` | no | HTTP 401/403, `authentication_error`, `permission_error`, `invalid_api_key`, `PERMISSION_DENIED`, `UNAUTHENTICATED`, `AccessDeniedException`, Zhipu/Z.ai codes `1311` and `1315` (HTTP 429) and their wording: `订阅套餐暂未开放`, `仅限企业编程套餐`, `subscription plan does not yet include access`, `API Key is limited to enterprise coding package` |
@@ -119,10 +121,12 @@ Classification follows these precedence rules:
 3. Deterministic wording beats transient wording, with two exceptions: HTTP 408, 409, 429, or 5xx overrides `invalid_request` wording (OpenAI 429 bodies carry `invalid_request_error`), and Pi's Codex usage-limit message without a usable reset time is `rate_limit` (Pi renders it for every Codex 429 with a JSON error body, transient rate limits included, and for any status whose error `code`, or `type` when `code` is absent, contains `usage_limit_reached`, `usage_not_included`, or `rate_limit_exceeded`).
 4. Quota wording beats invalid-request wording, so Anthropic's low-credit error (`invalid_request_error … credit balance is too low … Plans & Billing`) is `quota`.
 5. Specific statuses (every status named in the table above, as opposed to a generic 5xx) beat transient wording, so a 400 that echoes "rate limit" stays `invalid_request`. The Codex message in rule 3 is the exception: it is `rate_limit` whatever the status.
-6. Transient wording beats a generic 5xx, so `503 The model is overloaded` is classified as `overloaded`.
+6. Transient wording beats a generic 5xx, so `503 The model is overloaded` is classified as `overloaded`. Transport wording also beats a generic `api_error` type: an event whose message says `Connection closed.` is `transport`, not `server_error`.
 7. A 5xx whose body contains `"code": 429` or `RESOURCE_EXHAUSTED` is treated as HTTP 429.
 
 The HTTP status is read from the captured response, from diagnostics (`details.status`), or from the error text (matched only at the start of the string or after `status`, `HTTP`, `code`, or `(`, so token counts, ports, and timestamps are ignored). Diagnostic codes omitted from the error text (`details.errorCode`, `details.error.code`, `details.error.type`, `error.code`) are also matched. Every decision records a reason naming its evidence, such as `auth: HTTP 401` or `rate_limit: HTTP 429; provider asked to wait 20s (header retry-after)`.
+
+Since Pi 1.5.1, connection errors include the transport cause. If a proxy refuses a CONNECT tunnel, the error can read `Connection error.: Proxy response (403) !== 200 when HTTP Tunneling` (or start with `fetch failed:`). The code in parentheses counts as a status: 400, 401, 403, 404, 413 and 422 stop retries, as does 402 without an accepted hint. In this case `auth: HTTP 403` refers to the proxy, not the provider key. By default, 407, 408, 409, 429, 504, 524, 529 and other 5xx responses are retried. Cause text is matched like the rest of the message, so a DNS error for `unauthorized.example` can be classified as `auth`. To retry these failures, add `Proxy response` or the host name to `patterns.retryable`; a matching `patterns.nonRetryable` entry or a hint above the acceptance limit still stops the retry.
 
 ## Provider-requested waits
 
@@ -151,7 +155,7 @@ Because of this, pi-retry uses header hints only when a single request is guaran
 - `retry.provider.maxRetries` is `0` or unset (no provider-level retries inside a single request; the AWS SDK's own retries are covered by the next rule).
 - The failed message's adapter is not `bedrock-converse-stream`. The AWS SDK retries throttles and transient failures (every 429, and 500, 502, 503, 504) inside one request whatever `retry.provider.maxRetries` says, so excluding the adapter keeps one Bedrock throttle from turning header hints off for the session. The cost: a Bedrock failure the SDK does not retry, such as a 408 `ModelTimeoutException`, a 409, or a 501, loses its header hint and falls back to diagnostics, error text, or backoff.
 
-Only an error response received between the request's start and end is used; on any adapter other than Bedrock, a second response during one request disables header hints for the rest of the session. `/retry` reports `headerHints: on` or `headerHints: off (<reason>)`, including the adapter rule for the selected model. With Pi's default `cacheWarming: streaming`, header hints are off, and pi-retry falls back to diagnostics and error text (OpenAI and Google include waits in error text, Codex includes usage-limit resets, and Anthropic 429s use exponential backoff).
+Only an error response received between the request's start and end is used; on any adapter other than Bedrock, a second response during one request disables header hints for the rest of the session. `/retry` reports `headerHints: on` or `headerHints: off (<reason>)`, including the adapter rule for the selected model. With Pi's default `cacheWarming: idle`, header hints are off, and pi-retry falls back to diagnostics and error text (OpenAI and Google include waits in error text, Codex includes usage-limit resets, and Anthropic 429s use exponential backoff).
 
 **Optional header-to-text bridge (Anthropic, OpenAI Completions/Responses, Azure, Codex over SSE):** Pi's provider-level retry converts a `retry-after` header above its cap into the error message `Server requested <n>s retry delay (max: <m>s)` (seconds rounded up), which pi-retry parses from the text. On Codex the message stands alone, without the provider's error after it, and it replaces the usage-limit text only on an HTTP error that Codex's adapter retries: a 429 without terminal quota or billing wording, a 500/502/503/504, or any status whose body matches `rate limit`, `overloaded`, `service unavailable`, `upstream connect`, or `connection refused`. Setting `"retry": { "enabled": false, "provider": { "maxRetries": 1, "maxRetryDelayMs": 1 } }` in Pi's `settings.json` surfaces every such `retry-after` header as text (a requested 1.2 s becomes 2 s). The trade-off is one extra provider-level retry (after 375–500 ms, or 1 s on Codex) on retryable errors without a `retry-after` header, and event-based header hints are turned off because provider retries are non-zero (which affects the adapters in the first row).
 
@@ -165,7 +169,7 @@ Notifications are sent via `ctx.ui.notify` with these exact strings so RPC clien
 | warning | `pi-retry: not retrying: <reason>` |
 | warning | `pi-retry: giving up after <max> retries: <reason>` |
 | info | `pi-retry: succeeded on retry <attempt>` |
-| info | `pi-retry: retry cancelled` on Escape, `/retry cancel`, `/retry off`, session switch, or shutdown |
+| info | `pi-retry: retry cancelled` on Escape, `/retry cancel`, `/retry off`, or session switch |
 | info | `pi-retry: Pi's built-in retry is enabled and runs first; set "retry": { "enabled": false } in Pi settings to let pi-retry govern every attempt` |
 
 In interactive mode these appear as notices alongside the countdown on the status line; in RPC mode they are forwarded over the extension UI channel; in JSON and print modes they are omitted.
@@ -176,7 +180,7 @@ In every mode, each retry appends a `pi-retry` custom session entry (which also 
 { attempt, category, reason, delayMs, hintSource?, provider, model, outcome: "scheduled" | "cancelled" }
 ```
 
-`outcome` is `scheduled` when the retry is sent; a follow-up entry with `cancelled` is appended if the run was aborted before the retried request started.
+`outcome` is `scheduled` when pi-retry asks Pi to continue at the end of the wait; a follow-up entry with `cancelled` is appended if the run was aborted before the retried request started.
 
 ## License
 

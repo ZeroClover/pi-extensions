@@ -91,14 +91,22 @@ The wait SHALL be cancellable, SHALL end early on a queued user message only whe
 #### Scenario: Session shutdown
 - **WHEN** a `session_shutdown` event is delivered during the wait
 - **THEN** the wait ends at once and no retry is sent
+- **AND** Pi 1.6 delivers the event only after a wait has ended (see "Quitting Pi during the wait")
+
+#### Scenario: Quitting Pi during the wait
+- **WHEN** Pi starts aborting the run for shutdown during the wait (interactive Ctrl+D, a double Ctrl+C or `/quit`, SIGTERM or, off Windows, SIGHUP, an RPC client closing its input, or an SDK runtime dispose)
+- **THEN** Pi aborts the run and waits for it to settle before it delivers `session_shutdown` (since Pi 1.5.1), so the wait runs to its end before Pi exits; no retry is sent, and the `pi-retry` entry records the attempt as cancelled, as for an RPC `abort`
+- **AND** Ctrl+D, a double Ctrl+C and `/quit` first drain terminal input, then close the interactive screen before the abort; if the countdown expires during the drain, the retry can start before Pi aborts
+- **AND** in print, JSON and RPC modes a second handled signal exits at once, before the wait ends; no retry is sent and no `pi-retry` entry is recorded for that attempt
+- **AND** cancelling first (Escape or `/retry cancel`) lets Pi exit at once
 
 #### Scenario: Session switch or fork
 - **WHEN** `session_before_switch` or `session_before_fork` fires during the wait
 - **THEN** the wait ends before Pi awaits the run abort, so the switch is not delayed, and no retry is sent
 
 #### Scenario: Reload command during the wait
-- **WHEN** the user runs the built-in `/reload` during the wait
-- **THEN** Pi refuses it because the session is busy; the user cancels the wait first and then reloads
+- **WHEN** the user runs the built-in `/reload`, or an extension command calls `ctx.reload()` or an SDK host calls `AgentSession.reload()`, during the wait
+- **THEN** Pi refuses it because the session is busy, and the wait continues; the user cancels the wait first and then reloads
 
 ### Requirement: Continuation
 When the wait completes, the extension SHALL return a boundary result that preserves earlier handlers' drafts, hides the failed assistant message from model context while keeping it in the session file, records the attempt, and requests one continuation on the same context plus any queued messages. No retry SHALL be scheduled when an earlier handler already drafted a compaction.
