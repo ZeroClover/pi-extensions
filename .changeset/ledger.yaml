@@ -12,6 +12,10 @@
   intents:
     - real-crabs-wash
     - wicked-chairs-leave
+"@zeroclover/pi-retry@0.1.3":
+  dir: packages/pi-retry
+  intents:
+    - slow-ants-swim
 "@zeroclover/pi-rtk@0.1.0":
   dir: packages/pi-rtk
   intents:
