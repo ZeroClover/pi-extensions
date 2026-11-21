@@ -459,6 +459,134 @@ const ROWS: Row[] = [
 	},
 	// Node transport
 	{ source: "Node fetch", text: "fetch failed", decision: retried, category: "transport" },
+	// Pi 1.5.1 and 1.6 additions to its retryable list (#11879, #12064, #12128, #12124), and cause renderings (#11695).
+	{
+		source: "gateway mid-stream drop (#12064)",
+		text: "Connection closed.",
+		decision: retried,
+		category: "transport: Connection closed",
+	},
+	{
+		source: "the same drop as an Anthropic-style error event",
+		text: '{"type":"error","error":{"type":"api_error","message":"Connection closed."}}',
+		decision: retried,
+		category: "transport: Connection closed",
+	},
+	{
+		source: "the same drop behind a generic 5xx: the wording decides, the status stays recognised",
+		text: "503 Connection closed.",
+		decision: retried,
+		category: "transport: Connection closed",
+	},
+	{
+		source: "bare Node code (#12128)",
+		text: "write ECONNABORTED",
+		decision: retried,
+		category: "transport: ECONNABORTED",
+	},
+	{
+		source:
+			"Codex WebSocket lifetime limit: Pi's `Codex error:` wrapper around OpenAI's documented message, not captured (#12124)",
+		text: "Codex error: Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.",
+		decision: retried,
+		category: "transport: websocket connection limit reached",
+	},
+	{
+		source: "Codex WebSocket lifetime limit, as a code (#12124)",
+		text: "websocket_connection_limit_reached",
+		decision: retried,
+		category: "transport: websocket_connection_limit_reached",
+	},
+	{
+		source: "gateway relaying a dropped Anthropic stream (#11879)",
+		text: "Claude Code's stream from Anthropic was cut short after the reply had begun",
+		decision: retried,
+		category: "transport: cut short after the reply had begun",
+	},
+	{
+		source: "bare Node code, guard: stays timeout",
+		text: "connect ETIMEDOUT 10.0.0.1:443",
+		decision: retried,
+		category: "timeout",
+	},
+	{
+		source: "guard",
+		text: "connection reset by peer",
+		decision: retried,
+		category: "transport",
+	},
+	{
+		source: "guard: a status decides first",
+		text: "401 Connection closed.",
+		decision: stopped,
+		category: "auth: HTTP 401",
+	},
+	{
+		source: "guard: rate-limit wording decides first",
+		text: "rate limit: Connection closed.",
+		decision: retried,
+		category: "rate_limit",
+	},
+	{
+		source: "cause rendering, guard",
+		text: "Connection error.: read ECONNRESET",
+		decision: retried,
+		category: "transport",
+	},
+	{
+		source: "cause text matched like the rest, guard (design D4)",
+		text: "Connection error.: getaddrinfo ENOTFOUND unauthorized.example",
+		decision: stopped,
+		category: "auth: unauthorized",
+	},
+	{
+		source: "cause rendering of a stalled stream, guard",
+		text: "terminated: Body Timeout Error (UND_ERR_BODY_TIMEOUT)",
+		decision: retried,
+		category: "timeout",
+	},
+	{
+		source: "HTTP proxy refuses the tunnel, cause rendering (#11695)",
+		text: "Connection error.: Proxy response (403) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: stopped,
+		category: "auth: HTTP 403",
+	},
+	{
+		source: "the same with a bad request",
+		text: "Connection error.: Proxy response (400) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: stopped,
+		category: "invalid_request: HTTP 400",
+	},
+	{
+		source: "the same with an unknown target",
+		text: "Connection error.: Proxy response (404) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: stopped,
+		category: "not_found: HTTP 404",
+	},
+	{
+		source: "the same with payment required, no hint",
+		text: "Connection error.: Proxy response (402) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: stopped,
+		category: "quota",
+	},
+	{
+		source: "raw-fetch adapters' rendering of the same refusal",
+		text: "fetch failed: Proxy response (403) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: stopped,
+		category: "auth: HTTP 403",
+	},
+	{
+		source: "proxy asks for credentials: 407 is not a mapped status",
+		text: "Connection error.: Proxy response (407) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: retried,
+		category: "transport: Connection error",
+	},
+	{
+		source: "proxy's upstream fails: the wording beats a generic 5xx",
+		text: "Connection error.: Proxy response (502) !== 200 when HTTP Tunneling (UND_ERR_ABORTED)",
+		decision: retried,
+		category: "transport: Connection error",
+	},
 	// Pi 1.5 addition to its non-retryable list (#11537), and the renderings its pattern misses.
 	{
 		source: "Zhipu/Z.ai 1308, code only",

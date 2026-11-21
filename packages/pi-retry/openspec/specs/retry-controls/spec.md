@@ -25,7 +25,7 @@ The extension SHALL report through `ctx.ui.notify` with fixed strings and severi
 
 #### Scenario: Notification strings
 - **WHEN** the extension reports
-- **THEN** it uses exactly: `pi-retry: <category> (<reason>); retry <attempt>/<max> in <duration>` (info) when a wait starts; `pi-retry: not retrying: <reason>` (warning) for a non-retryable failure; `pi-retry: giving up after <max> retries: <reason>` (warning) when the budget is exhausted; `pi-retry: succeeded on retry <attempt>` (info) on success; `pi-retry: retry cancelled` (info) on cancel, Escape, or shutdown; `pi-retry: Pi's built-in retry is enabled and runs first; set "retry": { "enabled": false } in Pi settings to let pi-retry govern every attempt` (info) for the layering notice
+- **THEN** it uses exactly: `pi-retry: <category> (<reason>); retry <attempt>/<max> in <duration>` (info) when a wait starts; `pi-retry: not retrying: <reason>` (warning) for a non-retryable failure; `pi-retry: giving up after <max> retries: <reason>` (warning) when the budget is exhausted; `pi-retry: succeeded on retry <attempt>` (info) on success; `pi-retry: retry cancelled` (info) on cancel, Escape, session switch, or a `session_shutdown` delivered during the wait, which Pi 1.6 does not do (see retry-scheduling, "Quitting Pi during the wait"); `pi-retry: Pi's built-in retry is enabled and runs first; set "retry": { "enabled": false } in Pi settings to let pi-retry govern every attempt` (info) for the layering notice
 
 #### Scenario: Status line during the wait
 - **WHEN** a 30 s wait starts for attempt 2 of 10
